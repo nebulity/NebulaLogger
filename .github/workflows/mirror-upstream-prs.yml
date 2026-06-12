@@ -26,7 +26,7 @@ on:
       max-builds:
         description: 'Max mirrored PRs to (re)build this cycle'
         required: false
-        default: '2'
+        default: '1'
 
 permissions:
   contents: write
@@ -55,7 +55,9 @@ jobs:
       - name: 'Mirror open upstream PRs'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MAX_BUILDS: ${{ github.event.inputs.max-builds || '2' }}
+          # One full Build consumes the Dev Hub's entire daily scratch org
+          # allowance (6 orgs/day, 3 active), so default to one build per cycle.
+          MAX_BUILDS: ${{ github.event.inputs.max-builds || '1' }}
         run: |
           set -euo pipefail
 
