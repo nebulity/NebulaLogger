@@ -165,7 +165,7 @@ jobs:
         run: |
           npx sf version
           echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          npx sf config set target-dev-hub=devhub --global
+          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -235,7 +235,7 @@ jobs:
         run: |
           npx sf version
           echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          npx sf config set target-dev-hub=devhub --global
+          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -328,7 +328,7 @@ jobs:
         run: |
           npx sf version
           echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          npx sf config set target-dev-hub=devhub --global
+          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -391,7 +391,7 @@ jobs:
         run: |
           npx sf version
           echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          npx sf config set target-dev-hub=devhub --global
+          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -457,7 +457,7 @@ jobs:
         run: |
           npx sf version
           echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          npx sf config set target-dev-hub=devhub --global
+          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -527,7 +527,7 @@ jobs:
         run: |
           npx sf version
           echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          npx sf config set target-dev-hub=devhub --global
+          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -648,7 +648,7 @@ jobs:
         run: |
           npx sf version
           echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          npx sf config set target-dev-hub=devhub --global
+          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
