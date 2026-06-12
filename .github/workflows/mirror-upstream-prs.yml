@@ -1,0 +1,182 @@
+# Mirrors open pull requests from the upstream repo (jongpie/NebulaLogger)
+# into this fork so the fork's LATdx-based Build pipeline runs against them.
+#
+# For each open upstream PR the workflow:
+#   1. Fetches the PR head and recreates it as branch `upstream-pr-<n>`.
+#   2. Overlays `.github/` from the fork's main so mirrored code can never
+#      alter the CI that runs against it (workflow-injection guard).
+#   3. Pushes the branch and opens/updates a fork PR labeled `upstream-mirror`.
+#   4. Dispatches the Build workflow on the branch (pushes made with
+#      GITHUB_TOKEN never trigger workflow runs by themselves).
+#
+# PRs that touch package.json / package-lock.json are mirrored but NOT
+# auto-built: steps holding Dev Hub credentials execute `npx sf` resolved
+# from node_modules, so a tampered lockfile could exfiltrate the secret.
+# Such PRs get the `held-sensitive` label and need a manual dispatch after
+# review.
+#
+# Fork PRs whose upstream PR closed are closed and their branches deleted.
+name: Mirror Upstream PRs
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      max-builds:
+        description: 'Max mirrored PRs to (re)build this cycle'
+        required: false
+        default: '1'
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: mirror-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: jongpie/NebulaLogger
+  MIRROR_LABEL: upstream-mirror
+  HELD_LABEL: held-sensitive
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'Checkout fork'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 'Mirror open upstream PRs'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # One full Build consumes the Dev Hub's entire daily scratch org
+          # allowance (6 orgs/day, 3 active), so default to one build per cycle.
+          MAX_BUILDS: ${{ github.event.inputs.max-builds || '1' }}
+        run: |
+          set -euo pipefail
+
+          git config user.name 'latdx-mirror-bot'
+          git config user.email 'ci@latdx.com'
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" 2>/dev/null \
+            || git remote set-url upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --quiet upstream main
+
+          gh label create "$MIRROR_LABEL" --repo "$GITHUB_REPOSITORY" \
+            --color 0DF293 --description 'Auto-mirrored from an upstream PR' 2>/dev/null || true
+          gh label create "$HELD_LABEL" --repo "$GITHUB_REPOSITORY" \
+            --color F2920C --description 'Touches npm manifests; build needs manual dispatch after review' 2>/dev/null || true
+
+          builds=0
+          gh pr list --repo "$UPSTREAM_REPO" --state open \
+            --json number,title,headRefOid,updatedAt,url --limit 100 \
+            | jq -c 'sort_by(.updatedAt) | reverse | .[]' > /tmp/upstream-prs.jsonl
+
+          while IFS= read -r pr; do
+            n="$(jq -r .number <<<"$pr")"
+            sha="$(jq -r .headRefOid <<<"$pr")"
+            title="$(jq -r .title <<<"$pr")"
+            url="$(jq -r .url <<<"$pr")"
+            branch="upstream-pr-${n}"
+
+            ci_tree="$(git rev-parse origin/main:.github)"
+            mirrored_sha=''
+            mirrored_tree=''
+            if git fetch --quiet origin "refs/heads/${branch}" 2>/dev/null; then
+              mirrored_sha="$(git log -1 --format=%B FETCH_HEAD | sed -n 's/^Upstream-SHA: //p' | head -1)"
+              mirrored_tree="$(git log -1 --format=%B FETCH_HEAD | sed -n 's/^Fork-CI-Tree: //p' | head -1)"
+            fi
+            if [ "$mirrored_sha" = "$sha" ] && [ "$mirrored_tree" = "$ci_tree" ]; then
+              echo "PR #${n}: up to date (${sha})"
+              continue
+            fi
+            if [ "$builds" -ge "$MAX_BUILDS" ]; then
+              echo "PR #${n}: build cap (${MAX_BUILDS}) reached, deferring to a later cycle"
+              continue
+            fi
+
+            echo "PR #${n}: mirroring ${sha}"
+            git fetch --quiet upstream "pull/${n}/head"
+            head_sha="$(git rev-parse FETCH_HEAD)"
+            if [ "$head_sha" != "$sha" ]; then
+              echo "PR #${n}: head moved while mirroring (${sha} -> ${head_sha}), using fetched head"
+              sha="$head_sha"
+            fi
+
+            merge_base="$(git merge-base upstream/main "$head_sha")"
+            sensitive="$(git diff --name-only "$merge_base" "$head_sha" -- package.json package-lock.json || true)"
+            dropped_ci="$(git diff --name-only "$merge_base" "$head_sha" -- .github || true)"
+
+            git checkout --quiet -B "$branch" "$head_sha"
+            git checkout --quiet origin/main -- .github
+            git add .github
+            git commit --quiet -m "ci: overlay fork CI for upstream PR #${n}" \
+              -m "Upstream-SHA: ${sha}" -m "Fork-CI-Tree: ${ci_tree}"
+            git push --quiet --force origin "$branch"
+
+            body_file="$(mktemp)"
+            {
+              echo "Mirrors upstream PR ${url} so the fork's LATdx Build pipeline runs against it."
+              echo
+              echo "- Managed by the \`Mirror Upstream PRs\` workflow; the branch is force-pushed on upstream updates. Do not edit by hand."
+              echo "- \`.github/\` is overlaid with the fork main's version on every mirror, so upstream workflow changes never execute here."
+              if [ -n "$dropped_ci" ]; then
+                echo "- Note: this upstream PR changes \`.github/\` files; those changes are dropped by the overlay and not exercised."
+              fi
+              if [ -n "$sensitive" ]; then
+                echo "- **Held**: touches npm manifests (\`package.json\` / \`package-lock.json\`). Review them, then dispatch the Build workflow on \`${branch}\` manually."
+              fi
+            } > "$body_file"
+
+            existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number --jq '.[0].number // empty')"
+            if [ -z "$existing" ]; then
+              gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
+                --title "[upstream #${n}] ${title}" --body-file "$body_file"
+              existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number --jq '.[0].number // empty')"
+            fi
+            # gh pr edit --add-label is unreliable on some repos; the issues
+            # labels endpoint is the stable path.
+            if [ -n "$existing" ]; then
+              gh api "repos/${GITHUB_REPOSITORY}/issues/${existing}/labels" -f "labels[]=${MIRROR_LABEL}" >/dev/null || true
+              if [ -n "$sensitive" ]; then
+                gh api "repos/${GITHUB_REPOSITORY}/issues/${existing}/labels" -f "labels[]=${HELD_LABEL}" >/dev/null || true
+              fi
+            fi
+            rm -f "$body_file"
+
+            if [ -n "$sensitive" ]; then
+              echo "PR #${n}: held (npm manifest changes), not dispatching Build"
+              continue
+            fi
+
+            gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref "refs/heads/${branch}"
+            builds=$((builds + 1))
+            echo "PR #${n}: Build dispatched on ${branch}"
+          done < /tmp/upstream-prs.jsonl
+
+      - name: 'Close fork PRs whose upstream PR closed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr list --repo "$GITHUB_REPOSITORY" --state open --label "$MIRROR_LABEL" \
+            --json number,headRefName --limit 200 \
+            | jq -c '.[]' | while IFS= read -r pr; do
+            fork_n="$(jq -r .number <<<"$pr")"
+            branch="$(jq -r .headRefName <<<"$pr")"
+            upstream_n="${branch#upstream-pr-}"
+            case "$upstream_n" in
+              ''|*[!0-9]*) continue ;;
+            esac
+            state="$(gh pr view "$upstream_n" --repo "$UPSTREAM_REPO" --json state --jq .state 2>/dev/null || echo UNKNOWN)"
+            if [ "$state" = "CLOSED" ] || [ "$state" = "MERGED" ]; then
+              echo "Fork PR #${fork_n}: upstream #${upstream_n} is ${state}, closing"
+              gh pr close "$fork_n" --repo "$GITHUB_REPOSITORY" \
+                --comment "Upstream PR is ${state}; closing the mirror." --delete-branch || true
+            fi
+          done
