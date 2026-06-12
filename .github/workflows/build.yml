@@ -164,8 +164,12 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -234,8 +238,12 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -327,8 +335,12 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -390,8 +402,12 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -456,8 +472,12 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -526,8 +546,12 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -647,8 +671,12 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
-          echo 'SF_TARGET_DEV_HUB=devhub' >> "$GITHUB_ENV"
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
