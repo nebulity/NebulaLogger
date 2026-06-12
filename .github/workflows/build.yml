@@ -164,7 +164,8 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub
+          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
+          npx sf config set target-dev-hub=devhub --global
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -233,7 +234,8 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub
+          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
+          npx sf config set target-dev-hub=devhub --global
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -325,7 +327,8 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub
+          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
+          npx sf config set target-dev-hub=devhub --global
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -387,7 +390,8 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub
+          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
+          npx sf config set target-dev-hub=devhub --global
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -452,7 +456,8 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub
+          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
+          npx sf config set target-dev-hub=devhub --global
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -521,7 +526,8 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub
+          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
+          npx sf config set target-dev-hub=devhub --global
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
@@ -641,7 +647,8 @@ jobs:
         shell: bash
         run: |
           npx sf version
-          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --set-default-dev-hub
+          echo "${DEV_HUB_SFDX_AUTH_URL}" | npx sf org login sfdx-url --sfdx-url-stdin --alias devhub
+          npx sf config set target-dev-hub=devhub --global
         env:
           DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
