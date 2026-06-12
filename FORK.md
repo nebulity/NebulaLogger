@@ -28,6 +28,12 @@ All divergence lives in `.github/` plus this file:
 'jongpie/NebulaLogger'`: Codecov uploads, the core coverage suite run,
     package version verification, and the three package-versioning jobs
     (their 2GP packages live in the upstream maintainer's Dev Hub).
+  - The five feature-permutation scratch jobs (advanced, event monitoring,
+    experience cloud, OmniStudio, platform cache) are also upstream-only:
+    the fork's Dev Hub allows 3 active / 6 daily scratch orgs, which cannot
+    fund a 6-org matrix per PR. The fork runs code quality, LWC tests, and
+    the base scratch org job (one org per PR build); pushes to fork main
+    skip the org job entirely.
   - `workflow_dispatch` trigger and a read-only default token
     (`permissions:` block) are added; `id-token: write` lets jobs mint the
     OIDC token used for the LATdx OSS license exchange.

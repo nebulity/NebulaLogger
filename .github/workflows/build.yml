@@ -136,6 +136,10 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   advanced-scratch-org-tests:
+    # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
+    # scratch allowance (6 orgs/day, 3 active) cannot fund the 6-org matrix
+    # per PR; LATdx coverage on the base org carries the runner-swap signal.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' }}
     environment: 'Advanced Scratch Org'
     name: 'Run Advanced Scratch Org Tests'
     needs: [code-quality-tests]
@@ -210,6 +214,9 @@ jobs:
         if: ${{ always() }}
 
   base-scratch-org-tests:
+    # In the fork, mirrored PRs are the signal; pushes to fork main skip the
+    # org job to preserve the small daily scratch allowance.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' || github.event_name != 'push' }}
     environment: 'Base Scratch Org'
     name: 'Run Base Scratch Org Tests'
     needs: [code-quality-tests]
@@ -307,6 +314,10 @@ jobs:
         if: ${{ always() }}
 
   event-monitoring-scratch-org-tests:
+    # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
+    # scratch allowance (6 orgs/day, 3 active) cannot fund the 6-org matrix
+    # per PR; LATdx coverage on the base org carries the runner-swap signal.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' }}
     environment: 'Event Monitoring Scratch Org'
     name: 'Run Event Monitoring Scratch Org Tests'
     needs: [code-quality-tests]
@@ -374,6 +385,10 @@ jobs:
         if: ${{ always() }}
 
   experience-cloud-scratch-org-tests:
+    # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
+    # scratch allowance (6 orgs/day, 3 active) cannot fund the 6-org matrix
+    # per PR; LATdx coverage on the base org carries the runner-swap signal.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' }}
     environment: 'Experience Cloud Scratch Org'
     name: 'Run Experience Cloud Scratch Org Tests'
     needs: [code-quality-tests, advanced-scratch-org-tests]
@@ -444,6 +459,10 @@ jobs:
         if: ${{ always() }}
 
   omnistudio-scratch-org-tests:
+    # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
+    # scratch allowance (6 orgs/day, 3 active) cannot fund the 6-org matrix
+    # per PR; LATdx coverage on the base org carries the runner-swap signal.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' }}
     environment: 'OmniStudio Scratch Org'
     name: 'Run OmniStudio Scratch Org Tests'
     needs: [code-quality-tests, base-scratch-org-tests]
@@ -518,6 +537,10 @@ jobs:
         if: ${{ always() }}
 
   platform-cache-scratch-org-tests:
+    # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
+    # scratch allowance (6 orgs/day, 3 active) cannot fund the 6-org matrix
+    # per PR; LATdx coverage on the base org carries the runner-swap signal.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' }}
     environment: 'Platform Cache Scratch Org'
     name: 'Run Platform Cache Scratch Org Tests'
     needs: [code-quality-tests, event-monitoring-scratch-org-tests]
