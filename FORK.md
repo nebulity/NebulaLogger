@@ -93,8 +93,9 @@ logout`) and re-issuing; prefer a dedicated low-privilege Dev Hub user for
   `gh workflow run sync-upstream.yml` (both also run on schedule).
 - Build a held PR after review: `gh workflow run build.yml --ref
 upstream-pr-<n>`.
-- The per-cycle build cap defaults to 2; raise it for a manual run with
-  `gh workflow run mirror-upstream-prs.yml -f max-builds=5`.
+- The per-cycle build cap defaults to 1 (a PR build costs one scratch org
+  of the 6/day allowance); raise it for a manual run with
+  `gh workflow run mirror-upstream-prs.yml -f max-builds=3`.
 
 ## Timing comparison caveats
 
