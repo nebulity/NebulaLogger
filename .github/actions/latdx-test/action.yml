@@ -52,7 +52,9 @@ runs:
     - name: 'Resolve LATdx license'
       shell: bash
       run: |
-        set -uo pipefail
+        # The runner injects -e -o pipefail; this step must never fail the
+        # job: every problem degrades to the free-tier cap with a warning.
+        set +e +o pipefail
 
         # Precedence:
         #   1. LATDX_LICENSE_KEY already in the environment (repo secret) -> use it.
@@ -71,12 +73,18 @@ runs:
         fi
 
         OIDC_RESPONSE="$(curl -sS -f -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Flatdx.com" || true)"
-        OIDC_TOKEN="$(echo "$OIDC_RESPONSE" | jq -r '.value // empty')"
-        if [ -z "$OIDC_TOKEN" ]; then
-          echo "::warning title=LATdx OSS license::Failed to mint GitHub OIDC token; falling back to free-tier cap."
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Flatdx.com" 2>/dev/null)"
+        CURL_RC=$?
+        if [ "$CURL_RC" -ne 0 ]; then
+          echo "::warning title=LATdx OSS license::OIDC token mint failed (curl rc=${CURL_RC}); falling back to free-tier cap."
           exit 0
         fi
+        OIDC_TOKEN="$(printf '%s' "$OIDC_RESPONSE" | jq -r '.value // empty' 2>/dev/null)"
+        if [ -z "$OIDC_TOKEN" ]; then
+          echo "::warning title=LATdx OSS license::OIDC response not parseable (length ${#OIDC_RESPONSE}); falling back to free-tier cap."
+          exit 0
+        fi
+        echo "Minted GitHub OIDC token (length ${#OIDC_TOKEN})."
 
         EXCHANGE_BODY="$(mktemp)"
         trap 'rm -f "$EXCHANGE_BODY"' EXIT
@@ -84,30 +92,34 @@ runs:
           -X POST https://latdx.com/api/oss/license \
           -H "Authorization: Bearer $OIDC_TOKEN" \
           -H "Content-Type: application/json" \
-          --max-time 15 || echo "000")"
+          --max-time 15)"
+        if [ $? -ne 0 ]; then
+          HTTP_CODE="000"
+        fi
+        echo "OSS license exchange returned HTTP ${HTTP_CODE}."
 
         case "$HTTP_CODE" in
           200)
-            LATDX_JWT="$(jq -r '.license // empty' < "$EXCHANGE_BODY")"
+            LATDX_JWT="$(jq -r '.license // empty' < "$EXCHANGE_BODY" 2>/dev/null)"
             if [ -z "$LATDX_JWT" ]; then
               echo "::warning title=LATdx OSS license::Exchange returned 200 without a license; falling back to free-tier cap."
               exit 0
             fi
             echo "::add-mask::$LATDX_JWT"
             echo "LATDX_LICENSE_KEY=$LATDX_JWT" >> "$GITHUB_ENV"
-            USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY")"
-            CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY")"
+            USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
             echo "OSS auto-license active (monthly_used=$USED, monthly_cap=$CAP) - free-tier cap lifted for this run."
             ;;
           403)
-            REASON="$(jq -r '.reason // "denied"' < "$EXCHANGE_BODY")"
-            ERROR="$(jq -r '.error // "OSS license denied."' < "$EXCHANGE_BODY")"
+            REASON="$(jq -r '.reason // "denied"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            ERROR="$(jq -r '.error // "OSS license denied."' < "$EXCHANGE_BODY" 2>/dev/null)"
             echo "::warning title=LATdx OSS license::${ERROR} (reason=${REASON}). Free-tier cap (100 tests/run) applies."
             ;;
           429)
-            USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY")"
-            CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY")"
-            RESET="$(jq -r '.reset_at // "next UTC month"' < "$EXCHANGE_BODY")"
+            USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            RESET="$(jq -r '.reset_at // "next UTC month"' < "$EXCHANGE_BODY" 2>/dev/null)"
             echo "::warning title=LATdx OSS license::Monthly cap reached (${USED}/${CAP}); resets ${RESET}. Free-tier cap applies for this run."
             ;;
           503)
@@ -117,7 +129,7 @@ runs:
             echo "::warning title=LATdx OSS license::Could not reach the LATdx site. Free-tier cap applies for this run."
             ;;
           *)
-            ERROR="$(jq -r '.error // ""' < "$EXCHANGE_BODY")"
+            ERROR="$(jq -r '.error // ""' < "$EXCHANGE_BODY" 2>/dev/null)"
             echo "::warning title=LATdx OSS license::Unexpected response ${HTTP_CODE} from /api/oss/license (${ERROR}). Free-tier cap applies."
             ;;
         esac
