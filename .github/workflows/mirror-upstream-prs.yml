@@ -82,11 +82,14 @@ jobs:
             url="$(jq -r .url <<<"$pr")"
             branch="upstream-pr-${n}"
 
+            ci_tree="$(git rev-parse origin/main:.github)"
             mirrored_sha=''
+            mirrored_tree=''
             if git fetch --quiet origin "refs/heads/${branch}" 2>/dev/null; then
               mirrored_sha="$(git log -1 --format=%B FETCH_HEAD | sed -n 's/^Upstream-SHA: //p' | head -1)"
+              mirrored_tree="$(git log -1 --format=%B FETCH_HEAD | sed -n 's/^Fork-CI-Tree: //p' | head -1)"
             fi
-            if [ "$mirrored_sha" = "$sha" ]; then
+            if [ "$mirrored_sha" = "$sha" ] && [ "$mirrored_tree" = "$ci_tree" ]; then
               echo "PR #${n}: up to date (${sha})"
               continue
             fi
@@ -110,7 +113,8 @@ jobs:
             git checkout --quiet -B "$branch" "$head_sha"
             git checkout --quiet origin/main -- .github
             git add .github
-            git commit --quiet -m "ci: overlay fork CI for upstream PR #${n}" -m "Upstream-SHA: ${sha}"
+            git commit --quiet -m "ci: overlay fork CI for upstream PR #${n}" \
+              -m "Upstream-SHA: ${sha}" -m "Fork-CI-Tree: ${ci_tree}"
             git push --quiet --force origin "$branch"
 
             body_file="$(mktemp)"
