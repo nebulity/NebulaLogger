@@ -72,11 +72,17 @@ logout`) and re-issuing; prefer a dedicated low-privilege Dev Hub user for
 
 | Secret                  | Required | Purpose                                                                                                                                              |
 | ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DEV_HUB_SFDX_AUTH_URL` | yes      | SFDX auth URL of the Dev Hub used to create scratch orgs (`sf org display --verbose --json` → `.result.sfdxAuthUrl`).                                |
+| `DEV_HUB_SFDX_AUTH_URL` | yes      | SFDX auth URL of the Dev Hub used to create scratch orgs (`sf org auth show-sfdx-auth-url`; `sf org display` redacts it).                            |
 | `LATDX_CI_LICENSE_KEY`  | no       | LATdx TEAM/CI license key. Without it the action falls back to the OSS OIDC exchange; if that path is unavailable, runs cap at 100 tests and exit 2. |
 
 ## Operations
 
+- Mirrored PRs always show a parked `pull_request` run ("workflow awaiting
+  approval"): GitHub requires approval for runs on PRs authored by
+  first-time contributors, and `github-actions[bot]` forever stays one. Do NOT
+  approve these; the mirror dispatches the real Build run, which needs no
+  approval and reports on the same commit. On a `held-sensitive` PR,
+  "Approve and run" would bypass the manifest-review hold.
 - Mirror or sync manually: `gh workflow run mirror-upstream-prs.yml` /
   `gh workflow run sync-upstream.yml` (both also run on schedule).
 - Build a held PR after review: `gh workflow run build.yml --ref
