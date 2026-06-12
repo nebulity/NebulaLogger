@@ -1,0 +1,64 @@
+# Keeps the fork's main aligned with upstream: merges jongpie/NebulaLogger
+# main into fork main daily. The fork's only divergence is its CI overlay
+# (.github changes), so merges are conflict-free unless upstream edits the
+# same workflow lines; on conflict the workflow opens an issue instead of
+# guessing.
+name: Sync Upstream Main
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: jongpie/NebulaLogger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'Checkout fork main'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: 'Merge upstream main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name 'latdx-mirror-bot'
+          git config user.email 'ci@latdx.com'
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git" 2>/dev/null \
+            || git remote set-url upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --quiet upstream main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo 'Fork main already contains upstream main; nothing to sync.'
+            exit 0
+          fi
+
+          if git merge --no-edit upstream/main; then
+            git push origin main
+            echo 'Merged upstream main and pushed.'
+          else
+            git merge --abort
+            existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+              --search 'Upstream sync conflict in:title' --json number --jq '.[0].number // empty')"
+            if [ -z "$existing" ]; then
+              gh issue create --repo "$GITHUB_REPOSITORY" \
+                --title 'Upstream sync conflict' \
+                --body "Merging \`upstream/main\` into \`main\` hit conflicts (likely upstream edited \`.github/workflows/build.yml\` lines the fork also changes). Resolve manually: fetch upstream, merge, keep the fork's CI overlay, push."
+            fi
+            echo '::error::Upstream merge conflict; opened/kept an issue for manual resolution.'
+            exit 1
+          fi

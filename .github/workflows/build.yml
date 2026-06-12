@@ -22,6 +22,18 @@ on:
       - config/scratch-orgs/**
       - nebula-logger/**
       - sfdx-project.json
+  # Mirrored upstream PRs are pushed with the workflow GITHUB_TOKEN, whose
+  # events never start new workflow runs; the mirror workflow dispatches
+  # builds explicitly instead.
+  workflow_dispatch:
+
+# Mirrored branches execute upstream-authored code, so the default token is
+# read-only; id-token lets jobs mint a GitHub OIDC token to exchange for a
+# LATdx OSS license.
+permissions:
+  contents: read
+  pull-requests: read
+  id-token: write
 
 jobs:
   code-quality-tests:
@@ -46,6 +58,9 @@ jobs:
         run: npm ci
 
       - name: 'Check for changes in core directory'
+        # paths-filter needs a PR or push payload to diff against; mirrored
+        # builds arrive via workflow_dispatch where it has no base.
+        if: ${{ github.event_name != 'workflow_dispatch' }}
         uses: dorny/paths-filter@v3
         id: changes
         with:
@@ -53,8 +68,10 @@ jobs:
             core:
               - './nebula-logger/core/**'
 
+      # Package version verification queries packages that exist only in the
+      # upstream maintainer's Dev Hub, so both steps stay upstream-only.
       - name: 'Authorize Dev Hub'
-        if: ${{ (github.event_name == 'pull_request') && (github.event.pull_request.draft == false) && (steps.changes.outputs.core == 'true') }}
+        if: ${{ (github.repository == 'jongpie/NebulaLogger') && (github.event_name == 'pull_request') && (github.event.pull_request.draft == false) && (steps.changes.outputs.core == 'true') }}
         shell: bash
         run: |
           npx sf version
@@ -67,15 +84,14 @@ jobs:
           DEV_HUB_JWT_SERVER_KEY: ${{ secrets.DEV_HUB_JWT_SERVER_KEY }}
 
       - name: 'Verify package version number is updated'
-        if: ${{ (github.event_name == 'pull_request') && (github.event.pull_request.draft == false) && (steps.changes.outputs.core == 'true') }}
+        if: ${{ (github.repository == 'jongpie/NebulaLogger') && (github.event_name == 'pull_request') && (github.event.pull_request.draft == false) && (steps.changes.outputs.core == 'true') }}
         run: npm run package:version:number:verify
 
-      - name: 'Verify LWC with ESLint'
+      - name: 'Verify LWC with Code Analyzer'
         run: npm run scan:lwc
 
-      - name: 'Verify Apex with SFDX Scanner'
+      - name: 'Verify Apex with Code Analyzer'
         run: |
-          npm run sf:plugins:link:scanner
           npm run scan:apex
 
       # TODO - uncomment - temporarily commented-out due to an issue with apexdocs in the pipeline
@@ -111,6 +127,8 @@ jobs:
         run: npm run test:lwc
 
       - name: 'Upload LWC code coverage to Codecov.io'
+        # Codecov is upstream's reporting concern; the fork has no token.
+        if: ${{ github.repository == 'jongpie/NebulaLogger' }}
         uses: codecov/codecov-action@v4
         with:
           fail_ci_if_error: true
@@ -118,6 +136,10 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   advanced-scratch-org-tests:
+    # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
+    # scratch allowance (6 orgs/day, 3 active) cannot fund the 6-org matrix
+    # per PR; LATdx coverage on the base org carries the runner-swap signal.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' }}
     environment: 'Advanced Scratch Org'
     name: 'Run Advanced Scratch Org Tests'
     needs: [code-quality-tests]
@@ -140,17 +162,20 @@ jobs:
         if: steps.cache-npm.outputs.cache-hit != 'true'
         run: npm ci
 
+      # The fork's Dev Hub has no JWT connected app; an SFDX auth URL secret
+      # authorizes the same default Dev Hub for scratch org creation.
       - name: 'Authorize Dev Hub'
         shell: bash
         run: |
           npx sf version
-          echo "${{ env.DEV_HUB_JWT_SERVER_KEY }}" > ./jwt-server.key
-          npx sf org login jwt --instance-url ${{ env.DEV_HUB_AUTH_URL }} --client-id ${{ env.DEV_HUB_CONSUMER_KEY }} --username ${{ env.DEV_HUB_BOT_USERNAME }} --jwt-key-file ./jwt-server.key --set-default-dev-hub
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
-          DEV_HUB_AUTH_URL: ${{ secrets.DEV_HUB_AUTH_URL }}
-          DEV_HUB_BOT_USERNAME: ${{ secrets.DEV_HUB_BOT_USERNAME }}
-          DEV_HUB_CONSUMER_KEY: ${{ secrets.DEV_HUB_CONSUMER_KEY }}
-          DEV_HUB_JWT_SERVER_KEY: ${{ secrets.DEV_HUB_JWT_SERVER_KEY }}
+          DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
       - name: 'Create Scratch Org'
         run: npx sf org create scratch --no-namespace --no-track-source --duration-days 1 --definition-file ./config/scratch-orgs/advanced-scratch-def.json --wait 20 --set-default --json
@@ -174,22 +199,24 @@ jobs:
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
 
-      # Nebula Logger has functionality that queries the AuthSession object when the current user has an active session.
-      # The code should work with or without an active session, so the pipeline runs the tests twice - asynchronously and synchronously.
-      # This is done because, based on how you execute Apex tests, the running user may have an active session (synchrously) or not (asynchronously).
-      # This data is also mocked during tests, but running the Apex tests sync & async serves within the pipeline acts as an extra level of
-      # integration testing to ensure that everything works with or without an active session.
-      - name: 'Run Apex Tests Asynchronously'
-        run: npm run test:apex:nocoverage
-
-      - name: 'Run Apex Tests Synchronously'
-        run: npm run test:apex:nocoverage -- --synchronous
+      # Upstream runs the suite twice (async + sync, an AuthSession integration
+      # nuance) with `sf apex run test`. The fork runs the same local-test
+      # selection once through the LATdx CLI; the sync/async permutation stays
+      # covered by upstream's own CI, and the deploy validate step above still
+      # executes RunLocalTests server-side as part of the deploy lifecycle.
+      - name: 'Run Apex Tests with LATdx'
+        uses: ./.github/actions/latdx-test
+        env:
+          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Delete Scratch Org'
         run: npx sf org delete scratch --no-prompt
         if: ${{ always() }}
 
   base-scratch-org-tests:
+    # In the fork, mirrored PRs are the signal; pushes to fork main skip the
+    # org job to preserve the small daily scratch allowance.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' || github.event_name != 'push' }}
     environment: 'Base Scratch Org'
     name: 'Run Base Scratch Org Tests'
     needs: [code-quality-tests]
@@ -212,17 +239,20 @@ jobs:
         if: steps.cache-npm.outputs.cache-hit != 'true'
         run: npm ci
 
+      # The fork's Dev Hub has no JWT connected app; an SFDX auth URL secret
+      # authorizes the same default Dev Hub for scratch org creation.
       - name: 'Authorize Dev Hub'
         shell: bash
         run: |
           npx sf version
-          echo "${{ env.DEV_HUB_JWT_SERVER_KEY }}" > ./jwt-server.key
-          npx sf org login jwt --instance-url ${{ env.DEV_HUB_AUTH_URL }} --client-id ${{ env.DEV_HUB_CONSUMER_KEY }} --username ${{ env.DEV_HUB_BOT_USERNAME }} --jwt-key-file ./jwt-server.key --set-default-dev-hub
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
-          DEV_HUB_AUTH_URL: ${{ secrets.DEV_HUB_AUTH_URL }}
-          DEV_HUB_BOT_USERNAME: ${{ secrets.DEV_HUB_BOT_USERNAME }}
-          DEV_HUB_CONSUMER_KEY: ${{ secrets.DEV_HUB_CONSUMER_KEY }}
-          DEV_HUB_JWT_SERVER_KEY: ${{ secrets.DEV_HUB_JWT_SERVER_KEY }}
+          DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
       - name: 'Create Scratch Org'
         run: npx sf org create scratch --no-namespace --no-track-source --duration-days 1 --definition-file ./config/scratch-orgs/base-scratch-def.json --wait 20 --set-default --json
@@ -239,16 +269,15 @@ jobs:
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
 
-      # Nebula Logger has functionality that queries the AuthSession object when the current user has an active session.
-      # The code should work with or without an active session, so the pipeline runs the tests twice - asynchronously and synchronously.
-      # This is done because, based on how you execute Apex tests, the running user may have an active session (synchrously) or not (asynchronously).
-      # This data is also mocked during tests, but running the Apex tests sync & async serves within the pipeline acts as an extra level of
-      # integration testing to ensure that everything works with or without an active session.
-      - name: 'Run Apex Tests Asynchronously'
-        run: npm run test:apex:nocoverage
-
-      - name: 'Run Apex Tests Synchronously'
-        run: npm run test:apex:nocoverage -- --synchronous
+      # Upstream runs the suite twice (async + sync, an AuthSession integration
+      # nuance) with `sf apex run test`. The fork runs the same local-test
+      # selection once through the LATdx CLI; the sync/async permutation stays
+      # covered by upstream's own CI, and the deploy validate step above still
+      # executes RunLocalTests server-side as part of the deploy lifecycle.
+      - name: 'Run Apex Tests with LATdx'
+        uses: ./.github/actions/latdx-test
+        env:
+          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       # This is the only place in Nebula Logger's pipeline where the `LoggerCore` test suite runs & the results are sent to Codecov.io.
       # This is specifically done in the base scratch org, using only the `LoggerCore test` suite, in order to help validate that the core metadata
@@ -266,10 +295,14 @@ jobs:
       # So now only the core test suite's results, from a base scratch org, are used for reporting code coverage, even though the project's overall code coverage
       # is much higher when using the `extra-tests` directory.
       - name: 'Get Core Test Suite Code Coverage'
+        # Coverage run exists to feed Codecov, which is upstream's reporting
+        # concern; the fork has no Codecov token.
+        if: ${{ github.repository == 'jongpie/NebulaLogger' }}
         run: npm run test:apex:suite:core
 
       # This is the only scratch org that's used for uploading code coverage
       - name: 'Upload Apex test code coverage to Codecov.io'
+        if: ${{ github.repository == 'jongpie/NebulaLogger' }}
         uses: codecov/codecov-action@v4
         with:
           fail_ci_if_error: true
@@ -281,6 +314,10 @@ jobs:
         if: ${{ always() }}
 
   event-monitoring-scratch-org-tests:
+    # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
+    # scratch allowance (6 orgs/day, 3 active) cannot fund the 6-org matrix
+    # per PR; LATdx coverage on the base org carries the runner-swap signal.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' }}
     environment: 'Event Monitoring Scratch Org'
     name: 'Run Event Monitoring Scratch Org Tests'
     needs: [code-quality-tests]
@@ -303,17 +340,20 @@ jobs:
         if: steps.cache-npm.outputs.cache-hit != 'true'
         run: npm ci
 
+      # The fork's Dev Hub has no JWT connected app; an SFDX auth URL secret
+      # authorizes the same default Dev Hub for scratch org creation.
       - name: 'Authorize Dev Hub'
         shell: bash
         run: |
           npx sf version
-          echo "${{ env.DEV_HUB_JWT_SERVER_KEY }}" > ./jwt-server.key
-          npx sf org login jwt --instance-url ${{ env.DEV_HUB_AUTH_URL }} --client-id ${{ env.DEV_HUB_CONSUMER_KEY }} --username ${{ env.DEV_HUB_BOT_USERNAME }} --jwt-key-file ./jwt-server.key --set-default-dev-hub
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
-          DEV_HUB_AUTH_URL: ${{ secrets.DEV_HUB_AUTH_URL }}
-          DEV_HUB_BOT_USERNAME: ${{ secrets.DEV_HUB_BOT_USERNAME }}
-          DEV_HUB_CONSUMER_KEY: ${{ secrets.DEV_HUB_CONSUMER_KEY }}
-          DEV_HUB_JWT_SERVER_KEY: ${{ secrets.DEV_HUB_JWT_SERVER_KEY }}
+          DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
       - name: 'Create Scratch Org'
         run: npx sf org create scratch --no-namespace --no-track-source --duration-days 1 --definition-file ./config/scratch-orgs/event-monitoring-scratch-def.json --wait 20 --set-default --json
@@ -330,22 +370,25 @@ jobs:
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
 
-      # Nebula Logger has functionality that queries the AuthSession object when the current user has an active session.
-      # The code should work with or without an active session, so the pipeline runs the tests twice - asynchronously and synchronously.
-      # This is done because, based on how you execute Apex tests, the running user may have an active session (synchrously) or not (asynchronously).
-      # This data is also mocked during tests, but running the Apex tests sync & async serves within the pipeline acts as an extra level of
-      # integration testing to ensure that everything works with or without an active session.
-      - name: 'Run Apex Tests Asynchronously'
-        run: npm run test:apex:nocoverage
-
-      - name: 'Run Apex Tests Synchronously'
-        run: npm run test:apex:nocoverage -- --synchronous
+      # Upstream runs the suite twice (async + sync, an AuthSession integration
+      # nuance) with `sf apex run test`. The fork runs the same local-test
+      # selection once through the LATdx CLI; the sync/async permutation stays
+      # covered by upstream's own CI, and the deploy validate step above still
+      # executes RunLocalTests server-side as part of the deploy lifecycle.
+      - name: 'Run Apex Tests with LATdx'
+        uses: ./.github/actions/latdx-test
+        env:
+          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Delete Scratch Org'
         run: npx sf org delete scratch --no-prompt
         if: ${{ always() }}
 
   experience-cloud-scratch-org-tests:
+    # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
+    # scratch allowance (6 orgs/day, 3 active) cannot fund the 6-org matrix
+    # per PR; LATdx coverage on the base org carries the runner-swap signal.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' }}
     environment: 'Experience Cloud Scratch Org'
     name: 'Run Experience Cloud Scratch Org Tests'
     needs: [code-quality-tests, advanced-scratch-org-tests]
@@ -368,17 +411,20 @@ jobs:
         if: steps.cache-npm.outputs.cache-hit != 'true'
         run: npm ci
 
+      # The fork's Dev Hub has no JWT connected app; an SFDX auth URL secret
+      # authorizes the same default Dev Hub for scratch org creation.
       - name: 'Authorize Dev Hub'
         shell: bash
         run: |
           npx sf version
-          echo "${{ env.DEV_HUB_JWT_SERVER_KEY }}" > ./jwt-server.key
-          npx sf org login jwt --instance-url ${{ env.DEV_HUB_AUTH_URL }} --client-id ${{ env.DEV_HUB_CONSUMER_KEY }} --username ${{ env.DEV_HUB_BOT_USERNAME }} --jwt-key-file ./jwt-server.key --set-default-dev-hub
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
-          DEV_HUB_AUTH_URL: ${{ secrets.DEV_HUB_AUTH_URL }}
-          DEV_HUB_BOT_USERNAME: ${{ secrets.DEV_HUB_BOT_USERNAME }}
-          DEV_HUB_CONSUMER_KEY: ${{ secrets.DEV_HUB_CONSUMER_KEY }}
-          DEV_HUB_JWT_SERVER_KEY: ${{ secrets.DEV_HUB_JWT_SERVER_KEY }}
+          DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
       - name: 'Create Scratch Org'
         run: npx sf org create scratch --no-namespace --no-track-source --duration-days 1 --definition-file ./config/scratch-orgs/experience-cloud-scratch-def.json --wait 20 --set-default --json
@@ -398,22 +444,25 @@ jobs:
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
 
-      # Nebula Logger has functionality that queries the AuthSession object when the current user has an active session.
-      # The code should work with or without an active session, so the pipeline runs the tests twice - asynchronously and synchronously.
-      # This is done because, based on how you execute Apex tests, the running user may have an active session (synchrously) or not (asynchronously).
-      # This data is also mocked during tests, but running the Apex tests sync & async serves within the pipeline acts as an extra level of
-      # integration testing to ensure that everything works with or without an active session.
-      - name: 'Run Apex Tests Asynchronously'
-        run: npm run test:apex:nocoverage
-
-      - name: 'Run Apex Tests Synchronously'
-        run: npm run test:apex:nocoverage -- --synchronous
+      # Upstream runs the suite twice (async + sync, an AuthSession integration
+      # nuance) with `sf apex run test`. The fork runs the same local-test
+      # selection once through the LATdx CLI; the sync/async permutation stays
+      # covered by upstream's own CI, and the deploy validate step above still
+      # executes RunLocalTests server-side as part of the deploy lifecycle.
+      - name: 'Run Apex Tests with LATdx'
+        uses: ./.github/actions/latdx-test
+        env:
+          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Delete Scratch Org'
         run: npx sf org delete scratch --no-prompt
         if: ${{ always() }}
 
   omnistudio-scratch-org-tests:
+    # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
+    # scratch allowance (6 orgs/day, 3 active) cannot fund the 6-org matrix
+    # per PR; LATdx coverage on the base org carries the runner-swap signal.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' }}
     environment: 'OmniStudio Scratch Org'
     name: 'Run OmniStudio Scratch Org Tests'
     needs: [code-quality-tests, base-scratch-org-tests]
@@ -436,17 +485,20 @@ jobs:
         if: steps.cache-npm.outputs.cache-hit != 'true'
         run: npm ci
 
+      # The fork's Dev Hub has no JWT connected app; an SFDX auth URL secret
+      # authorizes the same default Dev Hub for scratch org creation.
       - name: 'Authorize Dev Hub'
         shell: bash
         run: |
           npx sf version
-          echo "${{ env.DEV_HUB_JWT_SERVER_KEY }}" > ./jwt-server.key
-          npx sf org login jwt --instance-url ${{ env.DEV_HUB_AUTH_URL }} --client-id ${{ env.DEV_HUB_CONSUMER_KEY }} --username ${{ env.DEV_HUB_BOT_USERNAME }} --jwt-key-file ./jwt-server.key --set-default-dev-hub
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
-          DEV_HUB_AUTH_URL: ${{ secrets.DEV_HUB_AUTH_URL }}
-          DEV_HUB_BOT_USERNAME: ${{ secrets.DEV_HUB_BOT_USERNAME }}
-          DEV_HUB_CONSUMER_KEY: ${{ secrets.DEV_HUB_CONSUMER_KEY }}
-          DEV_HUB_JWT_SERVER_KEY: ${{ secrets.DEV_HUB_JWT_SERVER_KEY }}
+          DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
       - name: 'Create Scratch Org'
         run: npx sf org create scratch --no-namespace --no-track-source --duration-days 1 --definition-file ./config/scratch-orgs/omnistudio-scratch-def.json --wait 20 --set-default --json
@@ -470,22 +522,25 @@ jobs:
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
 
-      # Nebula Logger has functionality that queries the AuthSession object when the current user has an active session.
-      # The code should work with or without an active session, so the pipeline runs the tests twice - asynchronously and synchronously.
-      # This is done because, based on how you execute Apex tests, the running user may have an active session (synchrously) or not (asynchronously).
-      # This data is also mocked during tests, but running the Apex tests sync & async serves within the pipeline acts as an extra level of
-      # integration testing to ensure that everything works with or without an active session.
-      - name: 'Run Apex Tests Asynchronously'
-        run: npm run test:apex:nocoverage
-
-      - name: 'Run Apex Tests Synchronously'
-        run: npm run test:apex:nocoverage -- --synchronous
+      # Upstream runs the suite twice (async + sync, an AuthSession integration
+      # nuance) with `sf apex run test`. The fork runs the same local-test
+      # selection once through the LATdx CLI; the sync/async permutation stays
+      # covered by upstream's own CI, and the deploy validate step above still
+      # executes RunLocalTests server-side as part of the deploy lifecycle.
+      - name: 'Run Apex Tests with LATdx'
+        uses: ./.github/actions/latdx-test
+        env:
+          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Delete Base Scratch Org'
         run: npx sf org delete scratch --no-prompt
         if: ${{ always() }}
 
   platform-cache-scratch-org-tests:
+    # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
+    # scratch allowance (6 orgs/day, 3 active) cannot fund the 6-org matrix
+    # per PR; LATdx coverage on the base org carries the runner-swap signal.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' }}
     environment: 'Platform Cache Scratch Org'
     name: 'Run Platform Cache Scratch Org Tests'
     needs: [code-quality-tests, event-monitoring-scratch-org-tests]
@@ -508,17 +563,20 @@ jobs:
         if: steps.cache-npm.outputs.cache-hit != 'true'
         run: npm ci
 
+      # The fork's Dev Hub has no JWT connected app; an SFDX auth URL secret
+      # authorizes the same default Dev Hub for scratch org creation.
       - name: 'Authorize Dev Hub'
         shell: bash
         run: |
           npx sf version
-          echo "${{ env.DEV_HUB_JWT_SERVER_KEY }}" > ./jwt-server.key
-          npx sf org login jwt --instance-url ${{ env.DEV_HUB_AUTH_URL }} --client-id ${{ env.DEV_HUB_CONSUMER_KEY }} --username ${{ env.DEV_HUB_BOT_USERNAME }} --jwt-key-file ./jwt-server.key --set-default-dev-hub
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
-          DEV_HUB_AUTH_URL: ${{ secrets.DEV_HUB_AUTH_URL }}
-          DEV_HUB_BOT_USERNAME: ${{ secrets.DEV_HUB_BOT_USERNAME }}
-          DEV_HUB_CONSUMER_KEY: ${{ secrets.DEV_HUB_CONSUMER_KEY }}
-          DEV_HUB_JWT_SERVER_KEY: ${{ secrets.DEV_HUB_JWT_SERVER_KEY }}
+          DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
       - name: 'Create Scratch Org'
         run: npx sf org create scratch --no-namespace --no-track-source --duration-days 1 --definition-file ./config/scratch-orgs/platform-cache-scratch-def.json --wait 20 --set-default --json
@@ -535,23 +593,23 @@ jobs:
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
 
-      # Nebula Logger has functionality that queries the AuthSession object when the current user has an active session.
-      # The code should work with or without an active session, so the pipeline runs the tests twice - asynchronously and synchronously.
-      # This is done because, based on how you execute Apex tests, the running user may have an active session (synchrously) or not (asynchronously).
-      # This data is also mocked during tests, but running the Apex tests sync & async serves within the pipeline acts as an extra level of
-      # integration testing to ensure that everything works with or without an active session.
-      - name: 'Run Apex Tests Asynchronously'
-        run: npm run test:apex:nocoverage
-
-      - name: 'Run Apex Tests Synchronously'
-        run: npm run test:apex:nocoverage -- --synchronous
+      # Upstream runs the suite twice (async + sync, an AuthSession integration
+      # nuance) with `sf apex run test`. The fork runs the same local-test
+      # selection once through the LATdx CLI; the sync/async permutation stays
+      # covered by upstream's own CI, and the deploy validate step above still
+      # executes RunLocalTests server-side as part of the deploy lifecycle.
+      - name: 'Run Apex Tests with LATdx'
+        uses: ./.github/actions/latdx-test
+        env:
+          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Delete Scratch Org'
         run: npx sf org delete scratch --no-prompt
         if: ${{ always() }}
 
   create-managed-package-beta:
-    if: ${{ github.ref != 'refs/heads/main' }}
+    # Package versions belong to the upstream maintainer's Dev Hub.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' && github.ref != 'refs/heads/main' }}
 
     environment: 'Base Scratch Org'
     name: 'Create Managed Package Beta'
@@ -603,7 +661,8 @@ jobs:
         run: npm run package:version:create:managed
 
   create-unlocked-package-release-candidate:
-    if: ${{ github.ref != 'refs/heads/main' }}
+    # Package versions belong to the upstream maintainer's Dev Hub.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' && github.ref != 'refs/heads/main' }}
 
     environment: 'Base Scratch Org'
     name: 'Create Core Package Release Candidate'
@@ -629,17 +688,20 @@ jobs:
         if: steps.cache-npm.outputs.cache-hit != 'true'
         run: npm ci
 
+      # The fork's Dev Hub has no JWT connected app; an SFDX auth URL secret
+      # authorizes the same default Dev Hub for scratch org creation.
       - name: 'Authorize Dev Hub'
         shell: bash
         run: |
           npx sf version
-          echo "${{ env.DEV_HUB_JWT_SERVER_KEY }}" > ./jwt-server.key
-          npx sf org login jwt --instance-url ${{ env.DEV_HUB_AUTH_URL }} --client-id ${{ env.DEV_HUB_CONSUMER_KEY }} --username ${{ env.DEV_HUB_BOT_USERNAME }} --jwt-key-file ./jwt-server.key --set-default-dev-hub
+          # --sfdx-url-stdin takes a value and consumes the next CLI token,
+          # so the file variant is used instead (same pattern as upstream's
+          # jwt-server.key).
+          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
+          rm -f ./sfdx-auth-url.txt
         env:
-          DEV_HUB_AUTH_URL: ${{ secrets.DEV_HUB_AUTH_URL }}
-          DEV_HUB_BOT_USERNAME: ${{ secrets.DEV_HUB_BOT_USERNAME }}
-          DEV_HUB_CONSUMER_KEY: ${{ secrets.DEV_HUB_CONSUMER_KEY }}
-          DEV_HUB_JWT_SERVER_KEY: ${{ secrets.DEV_HUB_JWT_SERVER_KEY }}
+          DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
 
       - name: 'Create Scratch Org'
         run: npx sf org create scratch --no-namespace --no-track-source --alias base_package_subscriber_scratch_org --duration-days 1 --definition-file ./config/scratch-orgs/base-scratch-def.json --wait 20 --set-default --json
@@ -738,7 +800,8 @@ jobs:
         run: git push
 
   promote-package-versions:
-    if: ${{ github.ref == 'refs/heads/main' }}
+    # Package versions belong to the upstream maintainer's Dev Hub.
+    if: ${{ github.repository == 'jongpie/NebulaLogger' && github.ref == 'refs/heads/main' }}
 
     name: 'Promote Package Versions'
     needs:

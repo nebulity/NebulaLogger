@@ -1,0 +1,139 @@
+name: 'LATdx Apex Tests'
+description: >-
+  Install the LATdx CLI, resolve a license (explicit key via the
+  LATDX_LICENSE_KEY env var, or a short-lived OSS license minted from the
+  GitHub Actions OIDC token on public repos), and run the full local Apex
+  test suite against the job's default Salesforce org.
+
+inputs:
+  cli-version:
+    description: "LATdx CLI version to install (semver like '0.31.1') or 'latest'."
+    required: false
+    default: 'latest'
+
+runs:
+  using: composite
+  steps:
+    - name: 'Install LATdx CLI'
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+      run: |
+        set -euo pipefail
+        if [[ ! "$CLI_VERSION" =~ ^(latest|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          echo "::error::Invalid 'cli-version' input. Must be 'latest' or a semver like '0.31.1'."
+          exit 1
+        fi
+        # latdx.com serves the maintained install script, but Cloudflare
+        # returns 403 to some hosted-runner egress IP ranges; fall back to
+        # the GitHub raw mirror so the install succeeds from any runner.
+        script=""
+        for url in "https://latdx.com/install.sh" "https://raw.githubusercontent.com/nebulity/latdx-cli/main/install.sh"; do
+          if script="$(curl -fsSL "$url")"; then
+            break
+          fi
+          script=""
+        done
+        if [ -z "$script" ]; then
+          echo "::error::Could not download the LATdx install script from any source."
+          exit 1
+        fi
+        if [ "$CLI_VERSION" = "latest" ]; then
+          printf '%s' "$script" | bash
+        else
+          printf '%s' "$script" | bash -s -- "$CLI_VERSION"
+        fi
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: 'Verify LATdx CLI'
+      shell: bash
+      run: latdx --version
+
+    - name: 'Resolve LATdx license'
+      shell: bash
+      run: |
+        # The runner injects -e -o pipefail; this step must never fail the
+        # job: every problem degrades to the free-tier cap with a warning.
+        set +e +o pipefail
+
+        # Precedence:
+        #   1. LATDX_LICENSE_KEY already in the environment (repo secret) -> use it.
+        #   2. GH OIDC token available + repo public -> exchange for an OSS
+        #      auto-license via https://latdx.com/api/oss/license.
+        #   3. Nothing -> daemon runs free-tier (capped at 100 tests, exit 2).
+
+        if [ -n "${LATDX_LICENSE_KEY:-}" ]; then
+          echo "Using LATdx license from environment."
+          exit 0
+        fi
+
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::warning title=LATdx OSS license::OIDC token unavailable (missing 'permissions: id-token: write' on the job). Free-tier cap (100 tests/run) applies."
+          exit 0
+        fi
+
+        OIDC_RESPONSE="$(curl -sS -f -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Flatdx.com" 2>/dev/null)"
+        CURL_RC=$?
+        if [ "$CURL_RC" -ne 0 ]; then
+          echo "::warning title=LATdx OSS license::OIDC token mint failed (curl rc=${CURL_RC}); falling back to free-tier cap."
+          exit 0
+        fi
+        OIDC_TOKEN="$(printf '%s' "$OIDC_RESPONSE" | jq -r '.value // empty' 2>/dev/null)"
+        if [ -z "$OIDC_TOKEN" ]; then
+          echo "::warning title=LATdx OSS license::OIDC response not parseable (length ${#OIDC_RESPONSE}); falling back to free-tier cap."
+          exit 0
+        fi
+        echo "Minted GitHub OIDC token (length ${#OIDC_TOKEN})."
+
+        EXCHANGE_BODY="$(mktemp)"
+        trap 'rm -f "$EXCHANGE_BODY"' EXIT
+        HTTP_CODE="$(curl -sS -o "$EXCHANGE_BODY" -w "%{http_code}" \
+          -X POST https://latdx.com/api/oss/license \
+          -H "Authorization: Bearer $OIDC_TOKEN" \
+          -H "Content-Type: application/json" \
+          --max-time 15)"
+        if [ $? -ne 0 ]; then
+          HTTP_CODE="000"
+        fi
+        echo "OSS license exchange returned HTTP ${HTTP_CODE}."
+
+        case "$HTTP_CODE" in
+          200)
+            LATDX_JWT="$(jq -r '.license // empty' < "$EXCHANGE_BODY" 2>/dev/null)"
+            if [ -z "$LATDX_JWT" ]; then
+              echo "::warning title=LATdx OSS license::Exchange returned 200 without a license; falling back to free-tier cap."
+              exit 0
+            fi
+            echo "::add-mask::$LATDX_JWT"
+            echo "LATDX_LICENSE_KEY=$LATDX_JWT" >> "$GITHUB_ENV"
+            USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            echo "OSS auto-license active (monthly_used=$USED, monthly_cap=$CAP) - free-tier cap lifted for this run."
+            ;;
+          403)
+            REASON="$(jq -r '.reason // "denied"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            ERROR="$(jq -r '.error // "OSS license denied."' < "$EXCHANGE_BODY" 2>/dev/null)"
+            echo "::warning title=LATdx OSS license::${ERROR} (reason=${REASON}). Free-tier cap (100 tests/run) applies."
+            ;;
+          429)
+            USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            RESET="$(jq -r '.reset_at // "next UTC month"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            echo "::warning title=LATdx OSS license::Monthly cap reached (${USED}/${CAP}); resets ${RESET}. Free-tier cap applies for this run."
+            ;;
+          503)
+            echo "::warning title=LATdx OSS license::OSS path temporarily unavailable. Free-tier cap applies for this run."
+            ;;
+          000)
+            echo "::warning title=LATdx OSS license::Could not reach the LATdx site. Free-tier cap applies for this run."
+            ;;
+          *)
+            ERROR="$(jq -r '.error // ""' < "$EXCHANGE_BODY" 2>/dev/null)"
+            echo "::warning title=LATdx OSS license::Unexpected response ${HTTP_CODE} from /api/oss/license (${ERROR}). Free-tier cap applies."
+            ;;
+        esac
+
+    - name: 'Run Apex tests with LATdx'
+      shell: bash
+      run: latdx test run
