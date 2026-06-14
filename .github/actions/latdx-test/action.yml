@@ -99,60 +99,55 @@ runs:
         EXCHANGE_BODY="$(mktemp)"
         EXCHANGE_HEADERS="$(mktemp)"
         trap 'rm -f "$EXCHANGE_BODY" "$EXCHANGE_HEADERS"' EXIT
-        HTTP_CODE="$(curl -sS -o "$EXCHANGE_BODY" -D "$EXCHANGE_HEADERS" -w "%{http_code}" \
-          -X POST https://latdx.com/api/oss/license \
-          -H "Authorization: Bearer $OIDC_TOKEN" \
-          -H "Content-Type: application/json" \
-          --max-time 15)"
-        if [ $? -ne 0 ]; then
-          HTTP_CODE="000"
-        fi
-        echo "OSS license exchange returned HTTP ${HTTP_CODE}."
-        # On any non-200, surface whether the response is the LATdx route's
-        # JSON or an edge (Cloudflare) interstitial. The denied-request body
-        # carries no secrets. `server`/`cf-ray` headers identify the edge.
-        if [ "$HTTP_CODE" != "200" ]; then
-          echo "--- response server header: $(grep -i '^server:' "$EXCHANGE_HEADERS" | tr -d '\r')"
-          echo "--- cf-ray header: $(grep -i '^cf-ray:' "$EXCHANGE_HEADERS" | tr -d '\r')"
-          echo "--- content-type: $(grep -i '^content-type:' "$EXCHANGE_HEADERS" | tr -d '\r')"
-          echo "--- body (first 300 chars): $(head -c 300 "$EXCHANGE_BODY" | tr '\n' ' ')"
-        fi
 
-        case "$HTTP_CODE" in
-          200)
+        # Try the branded origin first (it self-heals once its edge allows
+        # GitHub Actions egress), then the Worker's *.workers.dev origin,
+        # which is not behind the latdx.com zone's WAF/security rules that
+        # currently 403 hosted-runner IPs. The OSS route authenticates on the
+        # OIDC token's audience claim, not the request Host, so the same token
+        # validates on either origin; the route's own OIDC + monthly-cap +
+        # kill-switch protections apply regardless of which origin serves it.
+        LATDX_JWT=""
+        for OSS_URL in \
+          "https://latdx.com/api/oss/license" \
+          "https://latdx-site.asolokh.workers.dev/api/oss/license"; do
+          HTTP_CODE="$(curl -sS -o "$EXCHANGE_BODY" -D "$EXCHANGE_HEADERS" -w "%{http_code}" \
+            -X POST "$OSS_URL" \
+            -H "Authorization: Bearer $OIDC_TOKEN" \
+            -H "Content-Type: application/json" \
+            --max-time 15)"
+          [ $? -ne 0 ] && HTTP_CODE="000"
+          echo "OSS license exchange via ${OSS_URL} -> HTTP ${HTTP_CODE}."
+
+          if [ "$HTTP_CODE" = "200" ]; then
             LATDX_JWT="$(jq -r '.license // empty' < "$EXCHANGE_BODY" 2>/dev/null)"
-            if [ -z "$LATDX_JWT" ]; then
-              echo "::warning title=LATdx OSS license::Exchange returned 200 without a license; falling back to free-tier cap."
-              exit 0
+            if [ -n "$LATDX_JWT" ]; then
+              echo "::add-mask::$LATDX_JWT"
+              echo "LATDX_LICENSE_KEY=$LATDX_JWT" >> "$GITHUB_ENV"
+              USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+              CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+              echo "OSS auto-license active (monthly_used=$USED, monthly_cap=$CAP); full suite enabled."
+              break
             fi
-            echo "::add-mask::$LATDX_JWT"
-            echo "LATDX_LICENSE_KEY=$LATDX_JWT" >> "$GITHUB_ENV"
-            USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
-            CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
-            echo "OSS auto-license active (monthly_used=$USED, monthly_cap=$CAP) - free-tier cap lifted for this run."
-            ;;
-          403)
-            REASON="$(jq -r '.reason // "denied"' < "$EXCHANGE_BODY" 2>/dev/null)"
-            ERROR="$(jq -r '.error // "OSS license denied."' < "$EXCHANGE_BODY" 2>/dev/null)"
-            echo "::warning title=LATdx OSS license::${ERROR} (reason=${REASON}). Free-tier cap (100 tests/run) applies."
-            ;;
-          429)
+            echo "::warning title=LATdx OSS license::200 without a license from ${OSS_URL}; trying next origin."
+          elif [ "$HTTP_CODE" = "429" ]; then
             USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
             CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
             RESET="$(jq -r '.reset_at // "next UTC month"' < "$EXCHANGE_BODY" 2>/dev/null)"
-            echo "::warning title=LATdx OSS license::Monthly cap reached (${USED}/${CAP}); resets ${RESET}. Free-tier cap applies for this run."
-            ;;
-          503)
-            echo "::warning title=LATdx OSS license::OSS path temporarily unavailable. Free-tier cap applies for this run."
-            ;;
-          000)
-            echo "::warning title=LATdx OSS license::Could not reach the LATdx site. Free-tier cap applies for this run."
-            ;;
-          *)
-            ERROR="$(jq -r '.error // ""' < "$EXCHANGE_BODY" 2>/dev/null)"
-            echo "::warning title=LATdx OSS license::Unexpected response ${HTTP_CODE} from /api/oss/license (${ERROR}). Free-tier cap applies."
-            ;;
-        esac
+            echo "::warning title=LATdx OSS license::Monthly cap reached (${USED}/${CAP}); resets ${RESET}."
+            break
+          else
+            # 403/503/000/etc: log edge diagnostics (no secrets) and fall
+            # through to the next origin.
+            echo "--- server: $(grep -i '^server:' "$EXCHANGE_HEADERS" | tr -d '\r')"
+            echo "--- cf-ray: $(grep -i '^cf-ray:' "$EXCHANGE_HEADERS" | tr -d '\r')"
+            echo "--- body (first 200 chars): $(head -c 200 "$EXCHANGE_BODY" | tr '\n' ' ')"
+          fi
+        done
+
+        if [ -z "$LATDX_JWT" ]; then
+          echo "::warning title=LATdx OSS license::No OSS license obtained from any origin; the run will halt on the CI license gate."
+        fi
 
     - name: 'Run Apex tests with LATdx'
       shell: bash
