@@ -14,6 +14,16 @@ inputs:
 runs:
   using: composite
   steps:
+    # LATdx's cache Phase 4 runs an apex-ls bridge on the JVM. Hosted images
+    # vary (ubuntu-latest ships a recent Temurin, ubuntu-22.04 a default JDK
+    # too old for the bridge jar -> "JVM exited (code=1)"), so pin a known-good
+    # JDK on PATH rather than relying on the image default.
+    - name: 'Set up Java for LATdx apex-ls'
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+
     - name: 'Install LATdx CLI'
       shell: bash
       env:
