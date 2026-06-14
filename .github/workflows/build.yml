@@ -200,9 +200,12 @@ jobs:
         if: ${{ github.repository == 'jongpie/NebulaLogger' }}
         run: npx sf project deploy validate --concise --source-dir ./nebula-logger/core/ --test-level RunLocalTests
 
-      # Now that the core directory has been deployed & tests have passed, deploy all of the metadata
+      # Deploy all of the metadata. `--ignore-conflicts` overrides the org's
+      # server-side SourceMember tracking, which on a reused org remembers a
+      # prior deploy and reports every component as a conflict; it is a no-op
+      # on a fresh org, where there is nothing to conflict with.
       - name: 'Deploy All Source to Scratch Org'
-        run: npx sf project deploy start --source-dir ./nebula-logger/
+        run: npx sf project deploy start --source-dir ./nebula-logger/ --ignore-conflicts
 
       - name: 'Deploy Test Metadata'
         run: npx sf project deploy start --source-dir ./config/scratch-orgs/
@@ -295,9 +298,12 @@ jobs:
         if: ${{ github.repository == 'jongpie/NebulaLogger' }}
         run: npx sf project deploy validate --concise --source-dir ./nebula-logger/core/ --test-level RunLocalTests
 
-      # Now that the core directory has been deployed & tests have passed, deploy all of the metadata
+      # Deploy all of the metadata. `--ignore-conflicts` overrides the org's
+      # server-side SourceMember tracking, which on a reused org remembers a
+      # prior deploy and reports every component as a conflict; it is a no-op
+      # on a fresh org, where there is nothing to conflict with.
       - name: 'Deploy All Source to Scratch Org'
-        run: npx sf project deploy start --source-dir ./nebula-logger/
+        run: npx sf project deploy start --source-dir ./nebula-logger/ --ignore-conflicts
 
       # The fork reuses a long-lived org where this permset is already
       # assigned from prior builds (a re-assign exits non-zero); tolerate it.
@@ -406,9 +412,12 @@ jobs:
         if: ${{ github.repository == 'jongpie/NebulaLogger' }}
         run: npx sf project deploy validate --concise --source-dir ./nebula-logger/core/ --test-level RunLocalTests
 
-      # Now that the core directory has been deployed & tests have passed, deploy all of the metadata
+      # Deploy all of the metadata. `--ignore-conflicts` overrides the org's
+      # server-side SourceMember tracking, which on a reused org remembers a
+      # prior deploy and reports every component as a conflict; it is a no-op
+      # on a fresh org, where there is nothing to conflict with.
       - name: 'Deploy All Source to Scratch Org'
-        run: npx sf project deploy start --source-dir ./nebula-logger/
+        run: npx sf project deploy start --source-dir ./nebula-logger/ --ignore-conflicts
 
       # The fork reuses a long-lived org where this permset is already
       # assigned from prior builds (a re-assign exits non-zero); tolerate it.
@@ -485,9 +494,12 @@ jobs:
         if: ${{ github.repository == 'jongpie/NebulaLogger' }}
         run: npx sf project deploy validate --concise --source-dir ./nebula-logger/core/ --test-level RunLocalTests
 
-      # Now that the core directory has been deployed & tests have passed, deploy all of the metadata
+      # Deploy all of the metadata. `--ignore-conflicts` overrides the org's
+      # server-side SourceMember tracking, which on a reused org remembers a
+      # prior deploy and reports every component as a conflict; it is a no-op
+      # on a fresh org, where there is nothing to conflict with.
       - name: 'Deploy All Source to Scratch Org'
-        run: npx sf project deploy start --source-dir ./nebula-logger/
+        run: npx sf project deploy start --source-dir ./nebula-logger/ --ignore-conflicts
 
       - name: 'Deploy Test Experience Sites Metadata'
         run: npx sf project deploy start --source-dir ./config/scratch-orgs/experience-cloud/
@@ -571,9 +583,12 @@ jobs:
         if: ${{ github.repository == 'jongpie/NebulaLogger' }}
         run: npx sf project deploy validate --concise --source-dir ./nebula-logger/core/ --test-level RunLocalTests
 
-      # Now that the core directory has been deployed & tests have passed, deploy all of the metadata
+      # Deploy all of the metadata. `--ignore-conflicts` overrides the org's
+      # server-side SourceMember tracking, which on a reused org remembers a
+      # prior deploy and reports every component as a conflict; it is a no-op
+      # on a fresh org, where there is nothing to conflict with.
       - name: 'Deploy All Source to Scratch Org'
-        run: npx sf project deploy start --source-dir ./nebula-logger/
+        run: npx sf project deploy start --source-dir ./nebula-logger/ --ignore-conflicts
 
       - name: 'Deploy Test OmniStudio Metadata'
         run: npx sf project deploy start --source-dir ./config/scratch-orgs/omnistudio/
@@ -653,9 +668,12 @@ jobs:
         if: ${{ github.repository == 'jongpie/NebulaLogger' }}
         run: npx sf project deploy validate --concise --source-dir ./nebula-logger/core/ --test-level RunLocalTests
 
-      # Now that the core directory has been deployed & tests have passed, deploy all of the metadata
+      # Deploy all of the metadata. `--ignore-conflicts` overrides the org's
+      # server-side SourceMember tracking, which on a reused org remembers a
+      # prior deploy and reports every component as a conflict; it is a no-op
+      # on a fresh org, where there is nothing to conflict with.
       - name: 'Deploy All Source to Scratch Org'
-        run: npx sf project deploy start --source-dir ./nebula-logger/
+        run: npx sf project deploy start --source-dir ./nebula-logger/ --ignore-conflicts
 
       # The fork reuses a long-lived org where this permset is already
       # assigned from prior builds (a re-assign exits non-zero); tolerate it.
