@@ -161,12 +161,14 @@ runs:
         latdx test run
         rc=$?
         set -e
-        # Exit 2 is EXIT_LICENSE_REQUIRED: the free-tier cap (100 tests) was
-        # hit. Treat it as a non-fatal, informational outcome so the pipeline
-        # stays green on the tests that did run; lift the cap with an OSS
-        # auto-license or LATDX_LICENSE_KEY to run the full suite.
+        # Exit 2 is EXIT_LICENSE_REQUIRED: the CI license gate halted the run.
+        # With no resolved license the gate blocks before any test executes
+        # (it does not fall back to a 100-test free tier); a resolved free/pro
+        # license would instead cap at 100. Either way no full suite ran. Keep
+        # the pipeline green but say so honestly: lift it with the OSS
+        # auto-license (OIDC, public repos) or LATDX_LICENSE_KEY.
         if [ "$rc" -eq 2 ]; then
-          echo "::warning title=LATdx license cap::Run halted at the free-tier cap (100 tests). Provide a license to run the full suite."
+          echo "::warning title=LATdx license::Run halted by the CI license gate (exit 2); no full suite ran. Provide an OSS auto-license or LATDX_LICENSE_KEY to run NebulaLogger's tests."
           exit 0
         fi
         exit "$rc"
