@@ -1,0 +1,211 @@
+name: 'LATdx Apex Tests'
+description: >-
+  Install the LATdx CLI, resolve a license (explicit key via the
+  LATDX_LICENSE_KEY env var, or a short-lived OSS license minted from the
+  GitHub Actions OIDC token on public repos), and run the full local Apex
+  test suite against the job's default Salesforce org.
+
+inputs:
+  cli-version:
+    # Must be >= 0.43.0: the OSS-license-uncaps-in-CI logic (#2190) landed
+    # 2026-06-10, one day after the last STABLE release (0.41.4), so 'latest'
+    # (= latest stable) still resolves to a binary that hard-blocks CI runs
+    # without a TEAM/CI token regardless of the OSS license. Pin a release
+    # that carries #2190 until a stable >= 0.43.0 ships; bump deliberately.
+    description: "LATdx CLI version to install (semver like '0.46.0') or 'latest'."
+    required: false
+    default: '0.46.0'
+  license:
+    # Pass an optional TEAM/CI license here as an INPUT, not via an
+    # `env: LATDX_LICENSE_KEY`. An unset secret passed as env sets an EMPTY
+    # LATDX_LICENSE_KEY at the action level, which overrides the OSS license
+    # this action resolves into $GITHUB_ENV and silently free-tier-caps the
+    # run. An empty input is inert.
+    description: 'Optional TEAM/CI LATdx license key. Leave empty to use the OSS auto-license on public repos.'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # LATdx's cache Phase 4 runs an apex-ls bridge on the JVM. Hosted images
+    # vary (ubuntu-latest ships a recent Temurin, ubuntu-22.04 a default JDK
+    # too old for the bridge jar -> "JVM exited (code=1)"), so pin a known-good
+    # JDK on PATH rather than relying on the image default.
+    - name: 'Set up Java for LATdx apex-ls'
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+
+    - name: 'Install LATdx CLI'
+      shell: bash
+      env:
+        CLI_VERSION: ${{ inputs.cli-version }}
+      run: |
+        set -euo pipefail
+        if [[ ! "$CLI_VERSION" =~ ^(latest|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+          echo "::error::Invalid 'cli-version' input. Must be 'latest' or a semver like '0.31.1'."
+          exit 1
+        fi
+        # latdx.com serves the maintained install script, but Cloudflare
+        # returns 403 to some hosted-runner egress IP ranges; fall back to
+        # the GitHub raw mirror so the install succeeds from any runner.
+        script=""
+        for url in "https://latdx.com/install.sh" "https://raw.githubusercontent.com/nebulity/latdx-cli/main/install.sh"; do
+          if script="$(curl -fsSL "$url")"; then
+            break
+          fi
+          script=""
+        done
+        if [ -z "$script" ]; then
+          echo "::error::Could not download the LATdx install script from any source."
+          exit 1
+        fi
+        if [ "$CLI_VERSION" = "latest" ]; then
+          printf '%s' "$script" | bash
+        else
+          printf '%s' "$script" | bash -s -- "$CLI_VERSION"
+        fi
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: 'Verify LATdx CLI'
+      shell: bash
+      run: latdx --version
+
+    - name: 'Resolve LATdx license'
+      shell: bash
+      env:
+        INPUT_LICENSE: ${{ inputs.license }}
+      run: |
+        # The runner injects -e -o pipefail; this step must never fail the
+        # job: every problem degrades to the free-tier cap with a warning.
+        set +e +o pipefail
+
+        # Precedence:
+        #   1. `license` input (TEAM/CI token) -> use it.
+        #   2. GH OIDC token available + repo public -> exchange for an OSS
+        #      auto-license via https://latdx.com/api/oss/license.
+        #   3. Nothing -> daemon runs free-tier (capped at 100 tests, exit 2).
+
+        if [ -n "${INPUT_LICENSE:-}" ]; then
+          echo "::add-mask::$INPUT_LICENSE"
+          echo "LATDX_LICENSE_KEY=$INPUT_LICENSE" >> "$GITHUB_ENV"
+          # A non-OSS token is live-resolved by the daemon against
+          # /api/license/resolve; route it around the latdx.com edge too.
+          echo "LATDX_LICENSE_BASE_URL=https://latdx-site.asolokh.workers.dev" >> "$GITHUB_ENV"
+          echo "Using provided LATdx license."
+          exit 0
+        fi
+
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::warning title=LATdx OSS license::OIDC token unavailable (missing 'permissions: id-token: write' on the job). Free-tier cap (100 tests/run) applies."
+          exit 0
+        fi
+
+        OIDC_RESPONSE="$(curl -sS -f -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Flatdx.com" 2>/dev/null)"
+        CURL_RC=$?
+        if [ "$CURL_RC" -ne 0 ]; then
+          echo "::warning title=LATdx OSS license::OIDC token mint failed (curl rc=${CURL_RC}); falling back to free-tier cap."
+          exit 0
+        fi
+        OIDC_TOKEN="$(printf '%s' "$OIDC_RESPONSE" | jq -r '.value // empty' 2>/dev/null)"
+        if [ -z "$OIDC_TOKEN" ]; then
+          echo "::warning title=LATdx OSS license::OIDC response not parseable (length ${#OIDC_RESPONSE}); falling back to free-tier cap."
+          exit 0
+        fi
+        echo "Minted GitHub OIDC token (length ${#OIDC_TOKEN})."
+
+        EXCHANGE_BODY="$(mktemp)"
+        EXCHANGE_HEADERS="$(mktemp)"
+        trap 'rm -f "$EXCHANGE_BODY" "$EXCHANGE_HEADERS"' EXIT
+
+        # Try the branded origin first (it self-heals once its edge allows
+        # GitHub Actions egress), then the Worker's *.workers.dev origin,
+        # which is not behind the latdx.com zone's WAF/security rules that
+        # currently 403 hosted-runner IPs. The OSS route authenticates on the
+        # OIDC token's audience claim, not the request Host, so the same token
+        # validates on either origin; the route's own OIDC + monthly-cap +
+        # kill-switch protections apply regardless of which origin serves it.
+        LATDX_JWT=""
+        for OSS_URL in \
+          "https://latdx.com/api/oss/license" \
+          "https://latdx-site.asolokh.workers.dev/api/oss/license"; do
+          HTTP_CODE="$(curl -sS -o "$EXCHANGE_BODY" -D "$EXCHANGE_HEADERS" -w "%{http_code}" \
+            -X POST "$OSS_URL" \
+            -H "Authorization: Bearer $OIDC_TOKEN" \
+            -H "Content-Type: application/json" \
+            --max-time 15)"
+          [ $? -ne 0 ] && HTTP_CODE="000"
+          echo "OSS license exchange via ${OSS_URL} -> HTTP ${HTTP_CODE}."
+
+          if [ "$HTTP_CODE" = "200" ]; then
+            LATDX_JWT="$(jq -r '.license // empty' < "$EXCHANGE_BODY" 2>/dev/null)"
+            if [ -n "$LATDX_JWT" ]; then
+              echo "::add-mask::$LATDX_JWT"
+              echo "LATDX_LICENSE_KEY=$LATDX_JWT" >> "$GITHUB_ENV"
+              # The daemon live-resolves the license per run against
+              # LATDX_LICENSE_BASE_URL + /api/license/resolve (default
+              # latdx.com). Point it at the same origin that minted the
+              # license so the resolve isn't blocked by the latdx.com edge
+              # either; it self-heals to latdx.com once that edge is fixed.
+              LICENSE_ORIGIN="${OSS_URL%/api/oss/license}"
+              echo "LATDX_LICENSE_BASE_URL=$LICENSE_ORIGIN" >> "$GITHUB_ENV"
+              USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+              CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+              echo "OSS auto-license active (monthly_used=$USED, monthly_cap=$CAP) via ${LICENSE_ORIGIN}; full suite enabled."
+              break
+            fi
+            echo "::warning title=LATdx OSS license::200 without a license from ${OSS_URL}; trying next origin."
+          elif [ "$HTTP_CODE" = "429" ]; then
+            USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            RESET="$(jq -r '.reset_at // "next UTC month"' < "$EXCHANGE_BODY" 2>/dev/null)"
+            echo "::warning title=LATdx OSS license::Monthly cap reached (${USED}/${CAP}); resets ${RESET}."
+            break
+          else
+            # 403/503/000/etc: log edge diagnostics (no secrets) and fall
+            # through to the next origin.
+            echo "--- server: $(grep -i '^server:' "$EXCHANGE_HEADERS" | tr -d '\r')"
+            echo "--- cf-ray: $(grep -i '^cf-ray:' "$EXCHANGE_HEADERS" | tr -d '\r')"
+            echo "--- body (first 200 chars): $(head -c 200 "$EXCHANGE_BODY" | tr '\n' ' ')"
+          fi
+        done
+
+        if [ -z "$LATDX_JWT" ]; then
+          echo "::warning title=LATdx OSS license::No OSS license obtained from any origin; the run will halt on the CI license gate."
+        fi
+
+    - name: 'Run Apex tests with LATdx'
+      shell: bash
+      run: |
+        # Retry ONLY the transient "Daemon failed to start" spawn timeout
+        # (cold-runner timing: the bun daemon + apex-ls JVM can miss the
+        # client's 5s connect budget). Real test failures (exit 1) and the
+        # license-gate halt (exit 2) are never retried.
+        rc=1
+        for attempt in 1 2 3; do
+          set +e
+          latdx test run 2>&1 | tee /tmp/latdx-out.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ] && grep -q "Daemon failed to start" /tmp/latdx-out.txt && [ "$attempt" -lt 3 ]; then
+            echo "Daemon spawn failed (transient, attempt ${attempt}/3); stopping daemon and retrying in 5s..."
+            latdx daemon stop >/dev/null 2>&1 || true
+            sleep 5
+            continue
+          fi
+          break
+        done
+        # Exit 2 is EXIT_LICENSE_REQUIRED: the CI license gate halted the run.
+        # With no resolved license the gate blocks before any test executes
+        # (it does not fall back to a 100-test free tier); a resolved free/pro
+        # license would instead cap at 100. Either way no full suite ran. Keep
+        # the pipeline green but say so honestly: lift it with the OSS
+        # auto-license (OIDC, public repos) or LATDX_LICENSE_KEY.
+        if [ "$rc" -eq 2 ]; then
+          echo "::warning title=LATdx license::Run halted by the CI license gate (exit 2); no full suite ran. Provide an OSS auto-license or LATDX_LICENSE_KEY to run NebulaLogger's tests."
+          exit 0
+        fi
+        exit "$rc"
