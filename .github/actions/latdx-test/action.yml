@@ -7,9 +7,14 @@ description: >-
 
 inputs:
   cli-version:
-    description: "LATdx CLI version to install (semver like '0.31.1') or 'latest'."
+    # Must be >= 0.43.0: the OSS-license-uncaps-in-CI logic (#2190) landed
+    # 2026-06-10, one day after the last STABLE release (0.41.4), so 'latest'
+    # (= latest stable) still resolves to a binary that hard-blocks CI runs
+    # without a TEAM/CI token regardless of the OSS license. Pin a release
+    # that carries #2190 until a stable >= 0.43.0 ships; bump deliberately.
+    description: "LATdx CLI version to install (semver like '0.46.0') or 'latest'."
     required: false
-    default: 'latest'
+    default: '0.46.0'
 
 runs:
   using: composite
