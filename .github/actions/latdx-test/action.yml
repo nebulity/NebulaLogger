@@ -124,9 +124,16 @@ runs:
             if [ -n "$LATDX_JWT" ]; then
               echo "::add-mask::$LATDX_JWT"
               echo "LATDX_LICENSE_KEY=$LATDX_JWT" >> "$GITHUB_ENV"
+              # The daemon live-resolves the license per run against
+              # LATDX_LICENSE_BASE_URL + /api/license/resolve (default
+              # latdx.com). Point it at the same origin that minted the
+              # license so the resolve isn't blocked by the latdx.com edge
+              # either; it self-heals to latdx.com once that edge is fixed.
+              LICENSE_ORIGIN="${OSS_URL%/api/oss/license}"
+              echo "LATDX_LICENSE_BASE_URL=$LICENSE_ORIGIN" >> "$GITHUB_ENV"
               USED="$(jq -r '.monthly_used // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
               CAP="$(jq -r '.monthly_cap // "?"' < "$EXCHANGE_BODY" 2>/dev/null)"
-              echo "OSS auto-license active (monthly_used=$USED, monthly_cap=$CAP); full suite enabled."
+              echo "OSS auto-license active (monthly_used=$USED, monthly_cap=$CAP) via ${LICENSE_ORIGIN}; full suite enabled."
               break
             fi
             echo "::warning title=LATdx OSS license::200 without a license from ${OSS_URL}; trying next origin."
