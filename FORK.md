@@ -113,6 +113,18 @@ upstream-pr-<n>`.
   `sf org auth show-sfdx-auth-url -o nebula-fork-shaped` and store the URL as
   the `TARGET_ORG_SFDX_AUTH_URL` repo secret. Delete the expired org.
 
+## Known issues
+
+- Full-suite run fails (`An unknown exception occurred`): once the OSS
+  auto-license uncaps the run, `latdx test run` over NebulaLogger's full
+  org suite (73 local Apex test classes) errors on every class, while stock
+  `sf apex run test --test-level RunLocalTests` passes all 1366 tests on the
+  same org. This is a LATdx bug in the uncapped full-suite submission path
+  (not an org, shape, or NebulaLogger problem), and it is the kind of
+  real-world signal this fork exists to surface. The base job stays red
+  until LATdx fixes it; the LATdx licensing, org provisioning, deploy, and
+  capped runs all work.
+
 ## Timing comparison caveats
 
 When comparing this fork's runs against upstream's runs on the same PR, the
