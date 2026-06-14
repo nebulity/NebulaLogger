@@ -146,4 +146,17 @@ runs:
 
     - name: 'Run Apex tests with LATdx'
       shell: bash
-      run: latdx test run
+      run: |
+        set +e
+        latdx test run
+        rc=$?
+        set -e
+        # Exit 2 is EXIT_LICENSE_REQUIRED: the free-tier cap (100 tests) was
+        # hit. Treat it as a non-fatal, informational outcome so the pipeline
+        # stays green on the tests that did run; lift the cap with an OSS
+        # auto-license or LATDX_LICENSE_KEY to run the full suite.
+        if [ "$rc" -eq 2 ]; then
+          echo "::warning title=LATdx license cap::Run halted at the free-tier cap (100 tests). Provide a license to run the full suite."
+          exit 0
+        fi
+        exit "$rc"
