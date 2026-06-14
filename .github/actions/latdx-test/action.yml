@@ -159,10 +159,24 @@ runs:
     - name: 'Run Apex tests with LATdx'
       shell: bash
       run: |
-        set +e
-        latdx test run
-        rc=$?
-        set -e
+        # Retry ONLY the transient "Daemon failed to start" spawn timeout
+        # (cold-runner timing: the bun daemon + apex-ls JVM can miss the
+        # client's 5s connect budget). Real test failures (exit 1) and the
+        # license-gate halt (exit 2) are never retried.
+        rc=1
+        for attempt in 1 2 3; do
+          set +e
+          latdx test run 2>&1 | tee /tmp/latdx-out.txt
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ] && grep -q "Daemon failed to start" /tmp/latdx-out.txt && [ "$attempt" -lt 3 ]; then
+            echo "Daemon spawn failed (transient, attempt ${attempt}/3); stopping daemon and retrying in 5s..."
+            latdx daemon stop >/dev/null 2>&1 || true
+            sleep 5
+            continue
+          fi
+          break
+        done
         # Exit 2 is EXIT_LICENSE_REQUIRED: the CI license gate halted the run.
         # With no resolved license the gate blocks before any test executes
         # (it does not fall back to a 100-test free tier); a resolved free/pro
