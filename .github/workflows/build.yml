@@ -35,6 +35,13 @@ permissions:
   pull-requests: read
   id-token: write
 
+# The fork deploys every build to one shared reserved pool org, so all fork
+# builds must serialize (queue, never cancel). Upstream creates a fresh org
+# per run, so it keeps native cross-run parallelism via a per-run group.
+concurrency:
+  group: ${{ github.repository == 'jongpie/NebulaLogger' && format('upstream-build-{0}', github.run_id) || 'nebula-fork-shared-org' }}
+  cancel-in-progress: false
+
 jobs:
   code-quality-tests:
     name: 'Run Code Quality Tests'
@@ -196,8 +203,12 @@ jobs:
       - name: 'Deploy Test Metadata'
         run: npx sf project deploy start --source-dir ./config/scratch-orgs/
 
+      # The fork reuses a long-lived org where this permset is already
+      # assigned from prior builds (a re-assign exits non-zero); tolerate it.
+      # No-op upstream, whose throwaway orgs start unassigned.
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
+        continue-on-error: ${{ github.repository != 'jongpie/NebulaLogger' }}
 
       # Upstream runs the suite twice (async + sync, an AuthSession integration
       # nuance) with `sf apex run test`. The fork runs the same local-test
@@ -239,22 +250,36 @@ jobs:
         if: steps.cache-npm.outputs.cache-hit != 'true'
         run: npm ci
 
-      # The fork's Dev Hub has no JWT connected app; an SFDX auth URL secret
-      # authorizes the same default Dev Hub for scratch org creation.
-      - name: 'Authorize Dev Hub'
+      # Upstream creates a throwaway scratch org per run. The fork instead
+      # reuses one long-lived org reserved from the LATdx scratch pool
+      # (the pool Dev Hub blocks fresh creates), authorized from its SFDX
+      # auth URL. The org is redeployed every build, which is idempotent.
+      - name: 'Authorize reserved pool org'
+        if: ${{ github.repository != 'jongpie/NebulaLogger' }}
         shell: bash
         run: |
           npx sf version
-          # --sfdx-url-stdin takes a value and consumes the next CLI token,
-          # so the file variant is used instead (same pattern as upstream's
-          # jwt-server.key).
-          echo "${DEV_HUB_SFDX_AUTH_URL}" > ./sfdx-auth-url.txt
-          npx sf org login sfdx-url --sfdx-url-file ./sfdx-auth-url.txt --alias devhub --set-default-dev-hub
-          rm -f ./sfdx-auth-url.txt
+          echo "${TARGET_ORG_SFDX_AUTH_URL}" > ./target-auth-url.txt
+          npx sf org login sfdx-url --sfdx-url-file ./target-auth-url.txt --alias target-org --set-default
+          rm -f ./target-auth-url.txt
         env:
-          DEV_HUB_SFDX_AUTH_URL: ${{ secrets.DEV_HUB_SFDX_AUTH_URL }}
+          TARGET_ORG_SFDX_AUTH_URL: ${{ secrets.TARGET_ORG_SFDX_AUTH_URL }}
+
+      - name: 'Authorize Dev Hub'
+        if: ${{ github.repository == 'jongpie/NebulaLogger' }}
+        shell: bash
+        run: |
+          npx sf version
+          echo "${{ env.DEV_HUB_JWT_SERVER_KEY }}" > ./jwt-server.key
+          npx sf org login jwt --instance-url ${{ env.DEV_HUB_AUTH_URL }} --client-id ${{ env.DEV_HUB_CONSUMER_KEY }} --username ${{ env.DEV_HUB_BOT_USERNAME }} --jwt-key-file ./jwt-server.key --set-default-dev-hub
+        env:
+          DEV_HUB_AUTH_URL: ${{ secrets.DEV_HUB_AUTH_URL }}
+          DEV_HUB_BOT_USERNAME: ${{ secrets.DEV_HUB_BOT_USERNAME }}
+          DEV_HUB_CONSUMER_KEY: ${{ secrets.DEV_HUB_CONSUMER_KEY }}
+          DEV_HUB_JWT_SERVER_KEY: ${{ secrets.DEV_HUB_JWT_SERVER_KEY }}
 
       - name: 'Create Scratch Org'
+        if: ${{ github.repository == 'jongpie/NebulaLogger' }}
         run: npx sf org create scratch --no-namespace --no-track-source --duration-days 1 --definition-file ./config/scratch-orgs/base-scratch-def.json --wait 20 --set-default --json
 
       # To ensure that all of the Apex classes in the core directory have 75+ code coverage,
@@ -266,8 +291,12 @@ jobs:
       - name: 'Deploy All Source to Scratch Org'
         run: npx sf project deploy start --source-dir ./nebula-logger/
 
+      # The fork reuses a long-lived org where this permset is already
+      # assigned from prior builds (a re-assign exits non-zero); tolerate it.
+      # No-op upstream, whose throwaway orgs start unassigned.
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
+        continue-on-error: ${{ github.repository != 'jongpie/NebulaLogger' }}
 
       # Upstream runs the suite twice (async + sync, an AuthSession integration
       # nuance) with `sf apex run test`. The fork runs the same local-test
@@ -309,9 +338,11 @@ jobs:
           flags: Apex
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      # Only upstream's throwaway org is deleted; the fork's reserved pool
+      # org is long-lived and reused across builds.
       - name: 'Delete Scratch Org'
         run: npx sf org delete scratch --no-prompt
-        if: ${{ always() }}
+        if: ${{ always() && github.repository == 'jongpie/NebulaLogger' }}
 
   event-monitoring-scratch-org-tests:
     # Feature-permutation orgs stay upstream-only: the fork's Dev Hub daily
@@ -367,8 +398,12 @@ jobs:
       - name: 'Deploy All Source to Scratch Org'
         run: npx sf project deploy start --source-dir ./nebula-logger/
 
+      # The fork reuses a long-lived org where this permset is already
+      # assigned from prior builds (a re-assign exits non-zero); tolerate it.
+      # No-op upstream, whose throwaway orgs start unassigned.
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
+        continue-on-error: ${{ github.repository != 'jongpie/NebulaLogger' }}
 
       # Upstream runs the suite twice (async + sync, an AuthSession integration
       # nuance) with `sf apex run test`. The fork runs the same local-test
@@ -441,8 +476,12 @@ jobs:
       - name: 'Deploy Test Experience Sites Metadata'
         run: npx sf project deploy start --source-dir ./config/scratch-orgs/experience-cloud/
 
+      # The fork reuses a long-lived org where this permset is already
+      # assigned from prior builds (a re-assign exits non-zero); tolerate it.
+      # No-op upstream, whose throwaway orgs start unassigned.
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
+        continue-on-error: ${{ github.repository != 'jongpie/NebulaLogger' }}
 
       # Upstream runs the suite twice (async + sync, an AuthSession integration
       # nuance) with `sf apex run test`. The fork runs the same local-test
@@ -519,8 +558,12 @@ jobs:
       - name: 'Deploy Test OmniStudio Metadata'
         run: npx sf project deploy start --source-dir ./config/scratch-orgs/omnistudio/
 
+      # The fork reuses a long-lived org where this permset is already
+      # assigned from prior builds (a re-assign exits non-zero); tolerate it.
+      # No-op upstream, whose throwaway orgs start unassigned.
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
+        continue-on-error: ${{ github.repository != 'jongpie/NebulaLogger' }}
 
       # Upstream runs the suite twice (async + sync, an AuthSession integration
       # nuance) with `sf apex run test`. The fork runs the same local-test
@@ -590,8 +633,12 @@ jobs:
       - name: 'Deploy All Source to Scratch Org'
         run: npx sf project deploy start --source-dir ./nebula-logger/
 
+      # The fork reuses a long-lived org where this permset is already
+      # assigned from prior builds (a re-assign exits non-zero); tolerate it.
+      # No-op upstream, whose throwaway orgs start unassigned.
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
+        continue-on-error: ${{ github.repository != 'jongpie/NebulaLogger' }}
 
       # Upstream runs the suite twice (async + sync, an AuthSession integration
       # nuance) with `sf apex run test`. The fork runs the same local-test

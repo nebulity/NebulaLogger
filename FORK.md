@@ -22,18 +22,23 @@ All divergence lives in `.github/` plus this file:
     (`.github/actions/latdx-test`). The `sf project deploy validate
 --test-level RunLocalTests` step is untouched, so the suite still runs
     server-side once per job as part of the deploy lifecycle.
-  - Dev Hub auth uses an SFDX auth URL secret (`DEV_HUB_SFDX_AUTH_URL`)
-    instead of upstream's JWT connected app.
+  - Org provisioning: upstream creates a throwaway scratch org per run; the
+    fork instead authorizes one long-lived org reserved from the LATdx
+    scratch pool (`TARGET_ORG_SFDX_AUTH_URL`) and reuses it across builds.
+    The pool Dev Hub blocks fresh scratch creates, and a reserved org is
+    pre-warmed, so the fork redeploys NebulaLogger onto the same org every
+    build (idempotent) rather than creating/deleting. The org is marked
+    `Allocation_status__c=Assigned` on the Dev Hub so sfp's pool prepare
+    will not hand it to another consumer.
   - Upstream-only concerns are gated on `github.repository ==
 'jongpie/NebulaLogger'`: Codecov uploads, the core coverage suite run,
     package version verification, and the three package-versioning jobs
     (their 2GP packages live in the upstream maintainer's Dev Hub).
   - The five feature-permutation scratch jobs (advanced, event monitoring,
-    experience cloud, OmniStudio, platform cache) are also upstream-only:
-    the fork's Dev Hub allows 3 active / 6 daily scratch orgs, which cannot
-    fund a 6-org matrix per PR. The fork runs code quality, LWC tests, and
-    the base scratch org job (one org per PR build); pushes to fork main
-    skip the org job entirely.
+    experience cloud, OmniStudio, platform cache) are upstream-only: they
+    need fresh feature-specific scratch orgs the fork cannot create. The
+    fork runs code quality, LWC tests, and the base scratch org job against
+    the single reserved pool org; pushes to fork main skip the org job.
   - `workflow_dispatch` trigger and a read-only default token
     (`permissions:` block) are added; `id-token: write` lets jobs mint the
     OIDC token used for the LATdx OSS license exchange.
@@ -65,21 +70,22 @@ code is untrusted:
   workflow or action changes from upstream PRs never execute here.
 - `build.yml` runs with a read-only `GITHUB_TOKEN`, so a checkout credential
   leak cannot push or read secrets.
-- Dev Hub credentials are exposed only to the `Authorize Dev Hub` step's
-  environment. That step executes `npx sf` resolved from `node_modules`, so
-  PRs touching `package.json` / `package-lock.json` are mirrored with the
+- The reserved org's credentials are exposed only to the org-auth and the
+  `npx sf` deploy steps, which resolve `sf` from `node_modules`, so PRs
+  touching `package.json` / `package-lock.json` are mirrored with the
   `held-sensitive` label and are NOT auto-built; review the manifest diff,
-  then dispatch Build on the branch manually.
-- Rotate/revoke the auth URL by logging the Dev Hub user out (`sf org
-logout`) and re-issuing; prefer a dedicated low-privilege Dev Hub user for
-  this fork.
+  then dispatch Build on the branch manually. The blast radius is one
+  disposable scratch org, not a Dev Hub.
+- Revoke a leaked org by releasing it on the pool Dev Hub (set
+  `Allocation_status__c` back to `Available` or delete the org) and rotating
+  `TARGET_ORG_SFDX_AUTH_URL` to a freshly reserved org.
 
 ## Secrets
 
-| Secret                  | Required | Purpose                                                                                                                                              |
-| ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DEV_HUB_SFDX_AUTH_URL` | yes      | SFDX auth URL of the Dev Hub used to create scratch orgs (`sf org auth show-sfdx-auth-url`; `sf org display` redacts it).                            |
-| `LATDX_CI_LICENSE_KEY`  | no       | LATdx TEAM/CI license key. Without it the action falls back to the OSS OIDC exchange; if that path is unavailable, runs cap at 100 tests and exit 2. |
+| Secret                     | Required | Purpose                                                                                                                                                             |
+| -------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TARGET_ORG_SFDX_AUTH_URL` | yes      | SFDX auth URL of the reserved pool org the fork deploys to and tests (`ScratchOrgInfo.SfdxAuthUrl__c` on the pool Dev Hub). Rotate when the org expires (~30 days). |
+| `LATDX_CI_LICENSE_KEY`     | no       | LATdx TEAM/CI license key. Without it the action falls back to the OSS OIDC exchange; if that path is unavailable, runs cap at 100 tests and exit 2.                |
 
 ## Operations
 
@@ -93,9 +99,17 @@ logout`) and re-issuing; prefer a dedicated low-privilege Dev Hub user for
   `gh workflow run sync-upstream.yml` (both also run on schedule).
 - Build a held PR after review: `gh workflow run build.yml --ref
 upstream-pr-<n>`.
-- The per-cycle build cap defaults to 1 (a PR build costs one scratch org
-  of the 6/day allowance); raise it for a manual run with
-  `gh workflow run mirror-upstream-prs.yml -f max-builds=3`.
+- All fork builds serialize on the single reserved org via a `concurrency`
+  group (`nebula-fork-shared-org`, queue not cancel), so a second build
+  waits rather than clashing on the shared org's deploy. The mirror's
+  per-cycle build cap defaults to 1; raise it for a manual run with
+  `gh workflow run mirror-upstream-prs.yml -f max-builds=3` (extra builds
+  queue behind the concurrency group).
+- Rotate the reserved org when it nears expiry (~30 days): on the pool Dev
+  Hub `latdx-dh`, query a fresh `Pooltag__c='ci'` /
+  `Allocation_status__c='Available'` `ScratchOrgInfo`, mark it `Assigned`,
+  set its `SfdxAuthUrl__c` as the `TARGET_ORG_SFDX_AUTH_URL` secret, and
+  release the old org back to `Available`.
 
 ## Timing comparison caveats
 

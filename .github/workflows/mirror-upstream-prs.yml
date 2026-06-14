@@ -10,8 +10,8 @@
 #      GITHUB_TOKEN never trigger workflow runs by themselves).
 #
 # PRs that touch package.json / package-lock.json are mirrored but NOT
-# auto-built: steps holding Dev Hub credentials execute `npx sf` resolved
-# from node_modules, so a tampered lockfile could exfiltrate the secret.
+# auto-built: steps holding the reserved org's credentials execute `npx sf`
+# resolved from node_modules, so a tampered lockfile could exfiltrate them.
 # Such PRs get the `held-sensitive` label and need a manual dispatch after
 # review.
 #
@@ -55,8 +55,9 @@ jobs:
       - name: 'Mirror open upstream PRs'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # One full Build consumes the Dev Hub's entire daily scratch org
-          # allowance (6 orgs/day, 3 active), so default to one build per cycle.
+          # All builds serialize on one shared reserved org (build.yml
+          # concurrency group), so dispatching many at once just queues them;
+          # default to one build per cycle to keep the queue short.
           MAX_BUILDS: ${{ github.event.inputs.max-builds || '1' }}
         run: |
           set -euo pipefail
