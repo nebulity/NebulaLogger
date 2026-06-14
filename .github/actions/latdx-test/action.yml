@@ -87,8 +87,9 @@ runs:
         echo "Minted GitHub OIDC token (length ${#OIDC_TOKEN})."
 
         EXCHANGE_BODY="$(mktemp)"
-        trap 'rm -f "$EXCHANGE_BODY"' EXIT
-        HTTP_CODE="$(curl -sS -o "$EXCHANGE_BODY" -w "%{http_code}" \
+        EXCHANGE_HEADERS="$(mktemp)"
+        trap 'rm -f "$EXCHANGE_BODY" "$EXCHANGE_HEADERS"' EXIT
+        HTTP_CODE="$(curl -sS -o "$EXCHANGE_BODY" -D "$EXCHANGE_HEADERS" -w "%{http_code}" \
           -X POST https://latdx.com/api/oss/license \
           -H "Authorization: Bearer $OIDC_TOKEN" \
           -H "Content-Type: application/json" \
@@ -97,6 +98,15 @@ runs:
           HTTP_CODE="000"
         fi
         echo "OSS license exchange returned HTTP ${HTTP_CODE}."
+        # On any non-200, surface whether the response is the LATdx route's
+        # JSON or an edge (Cloudflare) interstitial. The denied-request body
+        # carries no secrets. `server`/`cf-ray` headers identify the edge.
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "--- response server header: $(grep -i '^server:' "$EXCHANGE_HEADERS" | tr -d '\r')"
+          echo "--- cf-ray header: $(grep -i '^cf-ray:' "$EXCHANGE_HEADERS" | tr -d '\r')"
+          echo "--- content-type: $(grep -i '^content-type:' "$EXCHANGE_HEADERS" | tr -d '\r')"
+          echo "--- body (first 300 chars): $(head -c 300 "$EXCHANGE_BODY" | tr '\n' ' ')"
+        fi
 
         case "$HTTP_CODE" in
           200)
