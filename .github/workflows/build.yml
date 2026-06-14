@@ -267,8 +267,18 @@ jobs:
         run: |
           npx sf version
           echo "${TARGET_ORG_SFDX_AUTH_URL}" > ./target-auth-url.txt
-          npx sf org login sfdx-url --sfdx-url-file ./target-auth-url.txt --alias target-org --set-default
+          # The org's OAuth token endpoint occasionally times out from a
+          # runner (transient RefreshTokenAuthError); retry before giving up.
+          for attempt in 1 2 3; do
+            if npx sf org login sfdx-url --sfdx-url-file ./target-auth-url.txt --alias target-org --set-default; then
+              break
+            fi
+            echo "Org auth attempt ${attempt} failed; retrying in 10s..."
+            sleep 10
+          done
           rm -f ./target-auth-url.txt
+          # Fail loudly if every attempt failed rather than proceeding unauthed.
+          npx sf org display --target-org target-org >/dev/null
         env:
           TARGET_ORG_SFDX_AUTH_URL: ${{ secrets.TARGET_ORG_SFDX_AUTH_URL }}
 
