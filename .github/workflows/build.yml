@@ -224,8 +224,8 @@ jobs:
       # executes RunLocalTests server-side as part of the deploy lifecycle.
       - name: 'Run Apex Tests with LATdx'
         uses: ./.github/actions/latdx-test
-        env:
-          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
+        with:
+          license: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Delete Scratch Org'
         run: npx sf org delete scratch --no-prompt
@@ -329,8 +329,8 @@ jobs:
       # executes RunLocalTests server-side as part of the deploy lifecycle.
       - name: 'Run Apex Tests with LATdx'
         uses: ./.github/actions/latdx-test
-        env:
-          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
+        with:
+          license: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       # This is the only place in Nebula Logger's pipeline where the `LoggerCore` test suite runs & the results are sent to Codecov.io.
       # This is specifically done in the base scratch org, using only the `LoggerCore test` suite, in order to help validate that the core metadata
@@ -443,8 +443,8 @@ jobs:
       # executes RunLocalTests server-side as part of the deploy lifecycle.
       - name: 'Run Apex Tests with LATdx'
         uses: ./.github/actions/latdx-test
-        env:
-          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
+        with:
+          license: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Delete Scratch Org'
         run: npx sf org delete scratch --no-prompt
@@ -528,8 +528,8 @@ jobs:
       # executes RunLocalTests server-side as part of the deploy lifecycle.
       - name: 'Run Apex Tests with LATdx'
         uses: ./.github/actions/latdx-test
-        env:
-          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
+        with:
+          license: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Delete Scratch Org'
         run: npx sf org delete scratch --no-prompt
@@ -617,8 +617,8 @@ jobs:
       # executes RunLocalTests server-side as part of the deploy lifecycle.
       - name: 'Run Apex Tests with LATdx'
         uses: ./.github/actions/latdx-test
-        env:
-          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
+        with:
+          license: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Delete Base Scratch Org'
         run: npx sf org delete scratch --no-prompt
@@ -699,8 +699,8 @@ jobs:
       # executes RunLocalTests server-side as part of the deploy lifecycle.
       - name: 'Run Apex Tests with LATdx'
         uses: ./.github/actions/latdx-test
-        env:
-          LATDX_LICENSE_KEY: ${{ secrets.LATDX_CI_LICENSE_KEY }}
+        with:
+          license: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Delete Scratch Org'
         run: npx sf org delete scratch --no-prompt

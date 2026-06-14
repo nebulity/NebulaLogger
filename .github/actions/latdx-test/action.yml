@@ -15,6 +15,15 @@ inputs:
     description: "LATdx CLI version to install (semver like '0.46.0') or 'latest'."
     required: false
     default: '0.46.0'
+  license:
+    # Pass an optional TEAM/CI license here as an INPUT, not via an
+    # `env: LATDX_LICENSE_KEY`. An unset secret passed as env sets an EMPTY
+    # LATDX_LICENSE_KEY at the action level, which overrides the OSS license
+    # this action resolves into $GITHUB_ENV and silently free-tier-caps the
+    # run. An empty input is inert.
+    description: 'Optional TEAM/CI LATdx license key. Leave empty to use the OSS auto-license on public repos.'
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -66,19 +75,26 @@ runs:
 
     - name: 'Resolve LATdx license'
       shell: bash
+      env:
+        INPUT_LICENSE: ${{ inputs.license }}
       run: |
         # The runner injects -e -o pipefail; this step must never fail the
         # job: every problem degrades to the free-tier cap with a warning.
         set +e +o pipefail
 
         # Precedence:
-        #   1. LATDX_LICENSE_KEY already in the environment (repo secret) -> use it.
+        #   1. `license` input (TEAM/CI token) -> use it.
         #   2. GH OIDC token available + repo public -> exchange for an OSS
         #      auto-license via https://latdx.com/api/oss/license.
         #   3. Nothing -> daemon runs free-tier (capped at 100 tests, exit 2).
 
-        if [ -n "${LATDX_LICENSE_KEY:-}" ]; then
-          echo "Using LATdx license from environment."
+        if [ -n "${INPUT_LICENSE:-}" ]; then
+          echo "::add-mask::$INPUT_LICENSE"
+          echo "LATDX_LICENSE_KEY=$INPUT_LICENSE" >> "$GITHUB_ENV"
+          # A non-OSS token is live-resolved by the daemon against
+          # /api/license/resolve; route it around the latdx.com edge too.
+          echo "LATDX_LICENSE_BASE_URL=https://latdx-site.asolokh.workers.dev" >> "$GITHUB_ENV"
+          echo "Using provided LATdx license."
           exit 0
         fi
 
