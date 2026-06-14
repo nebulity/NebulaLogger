@@ -23,13 +23,13 @@ All divergence lives in `.github/` plus this file:
 --test-level RunLocalTests` step is untouched, so the suite still runs
     server-side once per job as part of the deploy lifecycle.
   - Org provisioning: upstream creates a throwaway scratch org per run; the
-    fork instead authorizes one long-lived org reserved from the LATdx
-    scratch pool (`TARGET_ORG_SFDX_AUTH_URL`) and reuses it across builds.
-    The pool Dev Hub blocks fresh scratch creates, and a reserved org is
-    pre-warmed, so the fork redeploys NebulaLogger onto the same org every
-    build (idempotent) rather than creating/deleting. The org is marked
-    `Allocation_status__c=Assigned` on the Dev Hub so sfp's pool prepare
-    will not hand it to another consumer.
+    fork instead authorizes one long-lived org (`TARGET_ORG_SFDX_AUTH_URL`)
+    and redeploys NebulaLogger onto it every build (idempotent). The org is
+    created once from NebulaLogger's own `config/scratch-orgs/base-scratch-def.json`
+    on the LATdx pool Dev Hub (`latdx-dh`), with a 30-day duration, so its
+    shape (edition, features, settings) matches what the base job expects —
+    not the LATdx pool's scratch shape. It carries no `Pooltag__c`, so sfp's
+    pool prepare ignores it.
   - Upstream-only concerns are gated on `github.repository ==
 'jongpie/NebulaLogger'`: Codecov uploads, the core coverage suite run,
     package version verification, and the three package-versioning jobs
@@ -82,10 +82,10 @@ code is untrusted:
 
 ## Secrets
 
-| Secret                     | Required | Purpose                                                                                                                                                             |
-| -------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TARGET_ORG_SFDX_AUTH_URL` | yes      | SFDX auth URL of the reserved pool org the fork deploys to and tests (`ScratchOrgInfo.SfdxAuthUrl__c` on the pool Dev Hub). Rotate when the org expires (~30 days). |
-| `LATDX_CI_LICENSE_KEY`     | no       | LATdx TEAM/CI license key. Without it the action falls back to the OSS OIDC exchange; if that path is unavailable, runs cap at 100 tests and exit 2.                |
+| Secret                     | Required | Purpose                                                                                                                                                         |
+| -------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TARGET_ORG_SFDX_AUTH_URL` | yes      | SFDX auth URL of the long-lived org the fork deploys to and tests, created from `base-scratch-def.json` on the pool Dev Hub. Rotate when it expires (~30 days). |
+| `LATDX_CI_LICENSE_KEY`     | no       | LATdx TEAM/CI license key. Without it the action falls back to the OSS OIDC exchange; if that path is unavailable, runs cap at 100 tests and exit 2.            |
 
 ## Operations
 
@@ -105,11 +105,13 @@ upstream-pr-<n>`.
   per-cycle build cap defaults to 1; raise it for a manual run with
   `gh workflow run mirror-upstream-prs.yml -f max-builds=3` (extra builds
   queue behind the concurrency group).
-- Rotate the reserved org when it nears expiry (~30 days): on the pool Dev
-  Hub `latdx-dh`, query a fresh `Pooltag__c='ci'` /
-  `Allocation_status__c='Available'` `ScratchOrgInfo`, mark it `Assigned`,
-  set its `SfdxAuthUrl__c` as the `TARGET_ORG_SFDX_AUTH_URL` secret, and
-  release the old org back to `Available`.
+- Rotate the org when it nears expiry (~30 days): recreate it from the def
+  on the pool Dev Hub and update the secret:
+  `sf org create scratch --target-dev-hub latdx-dh --no-namespace
+--no-track-source --definition-file ./config/scratch-orgs/base-scratch-def.json
+--duration-days 30 --alias nebula-fork-shaped`, then
+  `sf org auth show-sfdx-auth-url -o nebula-fork-shaped` and store the URL as
+  the `TARGET_ORG_SFDX_AUTH_URL` repo secret. Delete the expired org.
 
 ## Timing comparison caveats
 
