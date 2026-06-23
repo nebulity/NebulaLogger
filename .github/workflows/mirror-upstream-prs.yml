@@ -122,7 +122,7 @@ jobs:
 
             body_file="$(mktemp)"
             {
-              echo "Mirrors upstream PR ${url} so the fork's LATdx Build pipeline runs against it."
+              echo "Mirrors upstream PR \`${url}\` so the fork's LATdx Build pipeline runs against it."
               echo
               echo "- Managed by the \`Mirror Upstream PRs\` workflow; the branch is force-pushed on upstream updates. Do not edit by hand."
               echo "- \`.github/\` is overlaid with the fork main's version on every mirror, so upstream workflow changes never execute here."
