@@ -116,7 +116,7 @@ jobs:
             git checkout --quiet -B "$branch" "$head_sha"
             git checkout --quiet origin/main -- .github
             git add .github
-            git commit --quiet -m "ci: overlay fork CI for upstream PR #${n}" \
+            git commit --quiet -m "ci: overlay fork CI for upstream-pr-${n}" \
               -m "Upstream-SHA: ${sha}" -m "Fork-CI-Tree: ${ci_tree}"
             git push --quiet --force origin "$branch"
 
