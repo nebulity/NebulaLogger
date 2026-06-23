@@ -116,13 +116,13 @@ jobs:
             git checkout --quiet -B "$branch" "$head_sha"
             git checkout --quiet origin/main -- .github
             git add .github
-            git commit --quiet -m "ci: overlay fork CI for upstream PR #${n}" \
+            git commit --quiet -m "ci: overlay fork CI for upstream-pr-${n}" \
               -m "Upstream-SHA: ${sha}" -m "Fork-CI-Tree: ${ci_tree}"
             git push --quiet --force origin "$branch"
 
             body_file="$(mktemp)"
             {
-              echo "Mirrors upstream PR ${url} so the fork's LATdx Build pipeline runs against it."
+              echo "Mirrors upstream PR \`${url}\` so the fork's LATdx Build pipeline runs against it."
               echo
               echo "- Managed by the \`Mirror Upstream PRs\` workflow; the branch is force-pushed on upstream updates. Do not edit by hand."
               echo "- \`.github/\` is overlaid with the fork main's version on every mirror, so upstream workflow changes never execute here."
