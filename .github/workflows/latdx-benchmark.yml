@@ -1,0 +1,307 @@
+name: 'LATdx Benchmark'
+
+# Publishes a reproducible measurement of what LATdx's test-result cache is
+# worth on a real Apex codebase, in one public run anyone can re-dispatch.
+#
+# Four runs of the same suite against the same org, in order:
+#   1. cold        - empty cache, every test executes on the org
+#   2. cached      - nothing changed, every result replays from cache
+#   3. comment     - a comment-only edit; keys are hashed from the token
+#                    stream, so this must STILL be a full cache hit
+#   4. incremental - a semantic edit to one class; only the tests whose
+#                    dependency closure reaches it may rerun
+#
+# Runs 2-4 are the claim being tested. Run 3 in particular is the falsifiable
+# one: if a comment-only edit reruns tests, the fingerprint is hashing file
+# bytes rather than the parsed token stream, and the summary will show it.
+#
+# The org is the same reserved pool org build.yml uses, so this measures the
+# real pipeline rather than a synthetic fixture.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cli-version:
+        description: "LATdx CLI version to install (semver like '0.46.0') or 'latest'."
+        required: false
+        default: '0.46.0'
+      touch-class:
+        description: 'Core class to edit for the incremental run.'
+        required: false
+        default: 'LoggerBatchableContext'
+
+permissions:
+  contents: read
+  # Required for the OSS auto-license OIDC exchange on public repos. Without
+  # it the run free-tier caps at 100 tests and the numbers are meaningless.
+  id-token: write
+
+jobs:
+  benchmark:
+    name: 'LATdx cold vs cached benchmark'
+    environment: 'Base Scratch Org'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 'Checkout source code'
+        uses: actions/checkout@v4
+
+      - name: 'Restore node_modules cache'
+        id: cache-npm
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            npm-
+
+      - name: 'Install npm dependencies'
+        if: steps.cache-npm.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: 'Authorize reserved pool org'
+        shell: bash
+        env:
+          TARGET_ORG_SFDX_AUTH_URL: ${{ secrets.TARGET_ORG_SFDX_AUTH_URL }}
+        run: |
+          npx sf version
+          echo "${TARGET_ORG_SFDX_AUTH_URL}" > ./target-auth-url.txt
+          for attempt in 1 2 3; do
+            if npx sf org login sfdx-url --sfdx-url-file ./target-auth-url.txt --alias target-org --set-default; then
+              break
+            fi
+            echo "Org auth attempt ${attempt} failed; retrying in 10s..."
+            sleep 10
+          done
+          rm -f ./target-auth-url.txt
+          npx sf org display --target-org target-org >/dev/null
+
+      - name: 'Deploy Nebula Logger'
+        run: npx sf project deploy start --source-dir ./nebula-logger/ --ignore-conflicts
+
+      - name: 'Assign Logger Admin Permission Set'
+        run: npm run permset:assign:admin
+
+      # LATdx's reach analysis runs an apex-ls bridge on the JVM; ubuntu-22.04's
+      # default JDK is too old for the bridge jar. Mirrors .github/actions/latdx-test.
+      - name: 'Set up Java for LATdx apex-ls'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Install + license mirror .github/actions/latdx-test/action.yml, which
+      # stays the canonical copy. They are inlined here rather than reused
+      # because that action also runs the suite, and this job needs to time
+      # four separate runs itself.
+      - name: 'Install LATdx CLI'
+        shell: bash
+        env:
+          CLI_VERSION: ${{ inputs.cli-version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$CLI_VERSION" =~ ^(latest|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::Invalid 'cli-version' input. Must be 'latest' or a semver."
+            exit 1
+          fi
+          script=""
+          for url in "https://latdx.com/install.sh" "https://raw.githubusercontent.com/nebulity/latdx-cli/main/install.sh"; do
+            if script="$(curl -fsSL "$url")"; then break; fi
+            script=""
+          done
+          if [ -z "$script" ]; then
+            echo "::error::Could not download the LATdx install script from any source."
+            exit 1
+          fi
+          if [ "$CLI_VERSION" = "latest" ]; then
+            printf '%s' "$script" | bash
+          else
+            printf '%s' "$script" | bash -s -- "$CLI_VERSION"
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: 'Verify LATdx CLI'
+        shell: bash
+        run: latdx --version
+
+      - name: 'Resolve LATdx OSS license'
+        shell: bash
+        env:
+          INPUT_LICENSE: ${{ secrets.LATDX_CI_LICENSE_KEY }}
+        run: |
+          set +e +o pipefail
+          if [ -n "${INPUT_LICENSE:-}" ]; then
+            echo "::add-mask::$INPUT_LICENSE"
+            echo "LATDX_LICENSE_KEY=$INPUT_LICENSE" >> "$GITHUB_ENV"
+            echo "LATDX_LICENSE_BASE_URL=https://latdx-site.asolokh.workers.dev" >> "$GITHUB_ENV"
+            echo "Using provided LATdx CI license."
+            exit 0
+          fi
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::warning::OIDC unavailable; run will free-tier cap and the numbers will not be full-suite."
+            exit 0
+          fi
+          OIDC_TOKEN="$(curl -sS -f -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Flatdx.com" 2>/dev/null | jq -r '.value // empty')"
+          if [ -z "$OIDC_TOKEN" ]; then
+            echo "::warning::OIDC mint failed; run will free-tier cap."
+            exit 0
+          fi
+          BODY="$(mktemp)"
+          for OSS_URL in "https://latdx.com/api/oss/license" "https://latdx-site.asolokh.workers.dev/api/oss/license"; do
+            CODE="$(curl -sS -o "$BODY" -w "%{http_code}" -X POST "$OSS_URL" \
+              -H "Authorization: Bearer $OIDC_TOKEN" -H "Content-Type: application/json" --max-time 15)"
+            echo "OSS license exchange via ${OSS_URL} -> HTTP ${CODE}"
+            if [ "$CODE" = "200" ]; then
+              JWT="$(jq -r '.license // empty' < "$BODY")"
+              if [ -n "$JWT" ]; then
+                echo "::add-mask::$JWT"
+                echo "LATDX_LICENSE_KEY=$JWT" >> "$GITHUB_ENV"
+                echo "LATDX_LICENSE_BASE_URL=${OSS_URL%/api/oss/license}" >> "$GITHUB_ENV"
+                echo "OSS auto-license active; full suite enabled."
+                break
+              fi
+            fi
+          done
+
+      - name: 'Run benchmark'
+        id: bench
+        shell: bash
+        env:
+          TOUCH_CLASS: ${{ inputs.touch-class }}
+        run: |
+          set -uo pipefail
+
+          CLASS_FILE="$(find ./nebula-logger -name "${TOUCH_CLASS}.cls" | head -1)"
+          if [ -z "$CLASS_FILE" ]; then
+            echo "::error::Could not find ${TOUCH_CLASS}.cls"
+            exit 1
+          fi
+          echo "Edit target: $CLASS_FILE"
+          cp "$CLASS_FILE" /tmp/original.cls
+
+          # `latdx test run --json` emits the standard `sf apex test run --json`
+          # envelope. Per sf's JSONReporter the summary carries no `skipped`
+          # field, so cache hits are counted from tests[].Outcome == "Skip".
+          # `testsRan` is the whole suite (cached + executed), which is what
+          # makes "executed" the number that actually shrinks.
+          run_suite() {
+            local label="$1"
+            local start end rc
+            start=$(date +%s)
+            latdx test run --json > "/tmp/${label}.json" 2> "/tmp/${label}.err"
+            rc=$?
+            end=$(date +%s)
+            local secs=$(( end - start ))
+            local total cached executed outcome
+            total=$(jq -r '.result.summary.testsRan // empty' "/tmp/${label}.json" 2>/dev/null)
+            outcome=$(jq -r '.result.summary.outcome // empty' "/tmp/${label}.json" 2>/dev/null)
+            cached=$(jq -r '[.result.tests[]? | select(.Outcome == "Skip")] | length' "/tmp/${label}.json" 2>/dev/null)
+            if [ -n "${total:-}" ] && [ -n "${cached:-}" ]; then
+              executed=$(( total - cached ))
+            else
+              executed=""
+            fi
+            echo "${label}|${secs}|${rc}|${total:-?}|${executed:-?}|${cached:-?}|${outcome:-?}" >> /tmp/bench.txt
+            echo "--- ${label}: ${secs}s exit=${rc} suite=${total:-?} executed=${executed:-?} cached=${cached:-?} outcome=${outcome:-?}"
+            if [ "$rc" = "2" ]; then
+              echo "::warning::${label} halted on the license gate (exit 2); no full suite ran."
+            fi
+          }
+
+          : > /tmp/bench.txt
+
+          echo "::group::Run 1/4 - cold (empty cache)"
+          latdx cache clear >/dev/null 2>&1 || true
+          run_suite cold
+          echo "::endgroup::"
+
+          echo "::group::Run 2/4 - cached (nothing changed)"
+          run_suite cached
+          echo "::endgroup::"
+
+          # No deploy here on purpose: fingerprints are computed from local
+          # source, so a comment-only edit is a pure client-side check that
+          # nothing was invalidated. If this run executes tests, the claim
+          # that keys hash the token stream rather than file bytes is false.
+          echo "::group::Run 3/4 - comment-only edit (must stay fully cached)"
+          printf '\n// LATdx benchmark: comment-only edit, must not invalidate any fingerprint.\n' >> "$CLASS_FILE"
+          run_suite comment
+          echo "::endgroup::"
+
+          echo "::group::Run 4/4 - semantic edit to ${TOUCH_CLASS}"
+          cp /tmp/original.cls "$CLASS_FILE"
+          # Insert a static, field-free marker method before the class's final
+          # brace. Static and self-contained so the workflow's touch-class input
+          # can point at any class without a compile error.
+          awk '
+            { lines[NR] = $0 }
+            END {
+              last = 0
+              for (i = NR; i >= 1; i--) { if (lines[i] ~ /^}/) { last = i; break } }
+              for (i = 1; i <= NR; i++) {
+                if (i == last) {
+                  print "  @SuppressWarnings(\047PMD.UnusedPrivateMethod\047)"
+                  print "  private static String latdxBenchmarkMarker() {"
+                  print "    return \047latdx-benchmark\047;"
+                  print "  }"
+                }
+                print lines[i]
+              }
+            }
+          ' "$CLASS_FILE" > /tmp/edited.cls && mv /tmp/edited.cls "$CLASS_FILE"
+          npx sf project deploy start --source-dir "$CLASS_FILE" --ignore-conflicts || true
+          run_suite incremental
+          cp /tmp/original.cls "$CLASS_FILE"
+          echo "::endgroup::"
+
+          cat /tmp/bench.txt
+
+      - name: 'Publish summary'
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "## LATdx benchmark - Nebula Logger"
+            echo
+            echo "Repo \`${GITHUB_REPOSITORY}\` @ \`${GITHUB_SHA:0:8}\` - CLI \`$(latdx --version 2>/dev/null | tail -1 || echo unknown)\`"
+            echo
+            echo "| run | what changed | wall | suite | executed on org | replayed from cache | outcome |"
+            echo "|---|---|--:|--:|--:|--:|---|"
+            while IFS='|' read -r label secs rc total executed cached outcome; do
+              case "$label" in
+                cold)        what="nothing (empty cache)";;
+                cached)      what="nothing";;
+                comment)     what="comment-only edit";;
+                incremental) what="one method added to a core class";;
+                *)           what="-";;
+              esac
+              echo "| ${label} | ${what} | ${secs}s | ${total} | ${executed} | ${cached} | ${outcome} |"
+            done < /tmp/bench.txt
+            echo
+            echo "**How to read it.** \`executed on org\` is the number that matters:"
+            echo "it is how many tests actually ran against Salesforce."
+            echo
+            echo "- **cached** should execute 0 - every result replays."
+            echo "- **comment** is the falsifiable one. A comment-only edit must also"
+            echo "  execute 0, because fingerprints hash the parsed token stream, not"
+            echo "  file bytes. If this row executes tests, that claim is wrong."
+            echo "- **incremental** should execute only the tests whose dependency"
+            echo "  closure reaches the edited class, not the whole suite."
+            echo
+            echo "Re-run it yourself: **Actions -> LATdx Benchmark -> Run workflow**."
+            echo "Raw \`sf apex test run --json\` output for all four runs is attached"
+            echo "as the \`latdx-benchmark-runs\` artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 'Upload raw run JSON'
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: latdx-benchmark-runs
+          path: |
+            /tmp/cold.json
+            /tmp/cached.json
+            /tmp/comment.json
+            /tmp/incremental.json
+            /tmp/bench.txt
+          if-no-files-found: warn
