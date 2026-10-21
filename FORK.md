@@ -45,8 +45,8 @@ All divergence lives in `.github/` plus this file:
     (`permissions:` block) are added; `id-token: write` lets jobs mint the
     OIDC token used for the LATdx OSS license exchange.
 - `.github/actions/latdx-setup/`: composite action that installs the LATdx
-  CLI (the fork's single version pin, `PINNED_CLI_VERSION`, the current
-  stable release) and resolves a license. Every workflow that runs LATdx
+  CLI (the fork's single version pin, `PINNED_CLI_VERSION`, at or above
+  the latest stable release) and resolves a license. Every workflow that runs LATdx
   uses it.
 - `.github/actions/latdx-test/`: `latdx-setup`, then `latdx test run`
   against the job's default org (the reserved org).
@@ -202,28 +202,31 @@ branch keeps every record. Points that keep the numbers honest:
   cache.
 - Selection shares are weighted by each test's RunTime in the stock run, not
   only counted, and a metadata risk flag from `latdx test impact` sets the
-  safe share to the full suite.
+  safe share to the full suite. The `selection-replay` input (default 50)
+  also replays `latdx test impact` alone over that many upstream commits,
+  with no org, to show selection as a distribution rather than a few
+  samples.
 - Summed RunTime is compute; Salesforce runs tests in parallel, so wall time
   saved is smaller. Both are recorded.
 - `sf project deploy validate` arms run on the change's delta against the org
   at the base commit, with the recipes' uncovered example trigger removed (as
   in upstream's clean org) and restored afterwards.
+- Deploys only add and update, so after each deploy the workflow deletes org
+  Apex the checkout does not contain, and each measured change ends by
+  redeploying fork main and pruning again. Build therefore finds the org as
+  fork main left it, not with classes or triggers from newer upstream code
+  (which can fire in, and fail, fork main's older tests).
 
 ## Known issues
 
-- Full-suite run fails (`An unknown exception occurred`): `latdx test run`
-  over NebulaLogger's full org suite (73 local Apex test classes, ~1,354
-  methods) errors on every class, while stock
-  `sf apex run test --test-level RunLocalTests` passes on the same org.
-  Reproduced on LATdx 0.52.3 against the fresh reserved org (Build run
-  [39592387700](https://github.com/nebulity/NebulaLogger/actions/runs/39592387700):
-  auth, deploy and the OSS license all succeed, then
-  `Error running tests: An unknown exception occurred.`, 73 classes FAIL).
-  Cause, on the LATdx side: a cold-cache run submits every method as an
-  explicit `tests[]` array to Salesforce's `runTestsAsynchronous`, which
-  rejects arrays above roughly 550-600 methods with `UNKNOWN_EXCEPTION`
-  (diagnosed in nebulity/latdx#2263, closed unmerged). The base job stays
-  red until a LATdx release fixes it; the fork then bumps its CLI pin.
+- A cold LATdx full suite is much slower than stock here. With 0.52.4 the
+  full suite passes (1,354 tests, Build run
+  [39616367683](https://github.com/nebulity/NebulaLogger/actions/runs/39616367683)),
+  but it took 9m17s wall where stock `sf apex run test --test-level
+RunLocalTests` takes 53-85 s on the same org: 72 of 73 classes finish in
+  about 1m40s, then `Logger_Tests` (496 methods, about 21 s of summed
+  RunTime) finishes alone 6 minutes later. Build never persists the LATdx
+  cache between runs, so every Build pays this cold cost.
 
 ## Timing comparison caveats
 

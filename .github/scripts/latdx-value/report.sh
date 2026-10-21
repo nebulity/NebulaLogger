@@ -2,10 +2,12 @@
 # shellcheck disable=SC2016 # jq programs are single-quoted on purpose
 # Renders measure.sh records (one JSON object per line on stdin) as either a
 # markdown table for the job summary (`report.sh md`) or CSV (`report.sh csv`,
-# header included). The CSV columns are the published dataset's schema.
+# header included), and replay-selection.sh rows as summary statistics
+# (`replay-md`) or CSV (`replay-csv`). The CSV columns are the published
+# dataset's schema.
 set -euo pipefail
 
-mode="${1:?usage: report.sh md|csv < records.ndjson}"
+mode="${1:?usage: report.sh md|csv|replay-md|replay-csv < records.ndjson}"
 
 case "$mode" in
   csv)
@@ -47,7 +49,7 @@ case "$mode" in
         elif $a.skipped then "skipped"
         elif ($a.rc // 0) != 0 then "\(s($a.wall_ms)) rc=\($a.rc)\(if $a.error then ": " + ($a.error | .[0:60]) else "" end)"
         else s($a.wall_ms) end;
-      def executed($a): if ($a.tests_ran // null) == null then "" else " (\(($a.tests_ran) - ($a.hits // 0)) of \($a.tests_ran))" end;
+      def executed($a): if ($a.tests_ran // null) == null or ($a.rc // 0) == 1 then "" else " (\(($a.tests_ran) - ($a.hits // 0)) of \($a.tests_ran))" end;
       def gate($a): if $a == null then "-" elif $a.skipped then "skipped: \($a.skipped)"
         else "\(s($a.wall_ms)), \($a.gate // "?")\(if $a.tests_completed then ", \($a.tests_completed) tests" else "" end)" end;
       .arms as $arms
@@ -60,8 +62,32 @@ case "$mode" in
         + " | \(gate($arms.validate_selected))"
         + " | \(run($arms.latdx_validate))\(if $arms.latdx_validate.coverage_ok == false then ", coverage gate failed" elif $arms.latdx_validate.coverage_ok == true then ", coverage ok" else "" end) |"'
     ;;
+  replay-md)
+    jq -rs '
+      def pct($p): sort | .[((length - 1) * $p | floor)];
+      def p($x): if $x == null then "-" else "\(($x * 1000 | round) / 10)%" end;
+      map(select(.share_time != null)) as $ok
+      | ($ok | map(.share_time)) as $t
+      | ($ok | map(.safe_share_time)) as $safe
+      | "Selection replay over \($ok | length) upstream commits touching nebula-logger/ (\(length - ($ok | length)) failed):\n",
+        "| | by test count | by summed RunTime | safe (risk flags run everything) |",
+        "|---|--:|--:|--:|",
+        "| median | \(p($ok | map(.share_count) | pct(0.5))) | \(p($t | pct(0.5))) | \(p($safe | pct(0.5))) |",
+        "| p25 / p75 | \(p($ok | map(.share_count) | pct(0.25))) / \(p($ok | map(.share_count) | pct(0.75))) | \(p($t | pct(0.25))) / \(p($t | pct(0.75))) | \(p($safe | pct(0.25))) / \(p($safe | pct(0.75))) |",
+        "| mean | \(p($ok | map(.share_count) | add / length)) | \(p($t | add / length)) | \(p($safe | add / length)) |",
+        "",
+        "\($ok | map(select(.share_time > 0.5)) | length) commits select more than half of the suite time; \($ok | map(select(.selected_methods == 0)) | length) select nothing; \($ok | map(select((.risk_flags | length) > 0)) | length) carry metadata risk flags."'
+    ;;
+  replay-csv)
+    jq -rs '
+      ["commit", "subject", "cli_version", "run_url", "delta_files", "apex_files", "changed_classes",
+       "selected_methods", "suite_methods", "share_count", "share_time", "risk_flags", "safe_share_time", "impact_ms", "impact_rc"],
+      (.[] | [.commit, .subject, .cli_version, .run_url, .delta_files, .apex_files, .changed_classes,
+              .selected_methods, .suite_methods, .share_count, .share_time, (.risk_flags // [] | join(" ")),
+              .safe_share_time, .impact_ms, .impact_rc]) | @csv'
+    ;;
   *)
-    echo "usage: report.sh md|csv < records.ndjson" >&2
+    echo "usage: report.sh md|csv|replay-md|replay-csv < records.ndjson" >&2
     exit 64
     ;;
 esac
