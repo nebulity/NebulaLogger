@@ -4,7 +4,8 @@
 # "$OUT_DIR/record.json" plus every arm's raw output next to it.
 #
 # Arms, in the order they run (the order matters, see below):
-#   1. deploy base       full source at BASE, the "production" state
+#   1. deploy base       full source at BASE, the "production" state (org
+#                        Apex the checkout lacks is pruned after each deploy)
 #   2. latdx prior       latdx test run at BASE: the previous build, which
 #                        leaves a warm cache for arm 8
 #   3. validate local    sf project deploy validate <delta> RunLocalTests:
@@ -125,6 +126,7 @@ echo "Delta: ${#DELTA[@]} deployable file(s), ${deleted_count} deletion(s) not m
 # --- 1-2: base state and the previous build's cache ------------------------
 checkout "$BASE_SHA"
 run_arm deploy_base sf project deploy start --source-dir "$SOURCE_DIR" --target-org "$ORG_ALIAS" --ignore-conflicts --wait 30 --json
+"$SCRIPT_DIR/prune-org-apex.sh" "$WS" "$ORG_ALIAS"
 clear_latdx_cache
 run_arm latdx_prior latdx test run --target-org "$ORG_ALIAS" --json
 
@@ -171,10 +173,15 @@ rm -rf "$snapshot"
 
 # --- 7-10: same code, three ways of running its tests -----------------------
 run_arm deploy_head sf project deploy start --source-dir "$SOURCE_DIR" --target-org "$ORG_ALIAS" --ignore-conflicts --wait 30 --json
+"$SCRIPT_DIR/prune-org-apex.sh" "$WS" "$ORG_ALIAS"
 run_arm latdx_warm latdx test run --target-org "$ORG_ALIAS" --json
 run_arm baseline_tests sf apex run test --test-level RunLocalTests --target-org "$ORG_ALIAS" --wait 60 --json
 clear_latdx_cache
 run_arm latdx_cold latdx test run --target-org "$ORG_ALIAS" --json
+
+# The daemon's own logs explain where a slow or failed LATdx arm spent time.
+stop_daemon
+if [ -d "$STATE_DIR/logs" ]; then cp -a "$STATE_DIR/logs" "$OUT_DIR/latdx-logs"; fi
 
 # Per-test RunTime of the stock run, the weights replay-selection.sh uses.
 jq -c '[.result.tests[]? | {key: ((.ApexClass.Name + "." + .MethodName) | ascii_downcase), value: (.RunTime // 0)}] | from_entries' \

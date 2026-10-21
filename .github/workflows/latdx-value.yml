@@ -170,6 +170,17 @@ jobs:
           ORG_ALIAS: target-org
         run: ./.github/scripts/latdx-value/measure.sh
 
+      # Build tests fork main on this same org, so leave the org as fork main
+      # has it: its source deployed and no Apex from the measured change left.
+      - name: 'Restore the org to fork main'
+        if: ${{ always() && steps.target.outcome == 'success' }}
+        run: |
+          set -uo pipefail
+          EMAIL_SERVICE_RUN_AS_USER="$(sf org display --target-org target-org --json | jq -r '.result.username')"
+          export EMAIL_SERVICE_RUN_AS_USER
+          sf project deploy start --source-dir nebula-logger --target-org target-org --ignore-conflicts --wait 30 > /dev/null
+          ./.github/scripts/latdx-value/prune-org-apex.sh "$GITHUB_WORKSPACE" target-org
+
       - name: 'Upload raw outputs'
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
