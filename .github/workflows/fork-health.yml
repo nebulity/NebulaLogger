@@ -7,7 +7,7 @@
 #      Within REMIND_DAYS of that date this run fails. GitHub emails a failed
 #      scheduled run to whoever last changed this workflow's cron, and the
 #      fork has Issues disabled, so the red run is the reminder.
-#   2. The LATdx CLI pinned in .github/actions/latdx-test/action.yml. When it
+#   2. The LATdx CLI pinned in .github/actions/latdx-setup/action.yml. When it
 #      falls behind the latest stable release this warns (the run stays green:
 #      an older pin still produces a valid signal).
 name: Fork Health
@@ -39,11 +39,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          pinned="$(awk '/^  cli-version:/{f=1} f && /default:/{gsub(/[^0-9.]/,"",$2); print $2; exit}' .github/actions/latdx-test/action.yml)"
+          pinned="$(grep -oE "PINNED_CLI_VERSION: '[0-9]+\.[0-9]+\.[0-9]+'" .github/actions/latdx-setup/action.yml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
           stable="$(gh release view -R nebulity/latdx-cli --json tagName --jq '.tagName | sub("^cli-v"; "")')"
           newest="$(printf '%s\n%s\n' "$pinned" "$stable" | sort -V | tail -1)"
           if [ "$pinned" != "$stable" ] && [ "$newest" = "$stable" ]; then
-            msg="LATdx CLI pin ${pinned} is behind stable ${stable}: bump cli-version in .github/actions/latdx-test/action.yml and latdx-benchmark.yml (FORK.md, Operations)."
+            msg="LATdx CLI pin ${pinned} is behind stable ${stable}: bump PINNED_CLI_VERSION in .github/actions/latdx-setup/action.yml (FORK.md, Operations)."
             echo "::warning title=LATdx CLI pin::${msg}"
           else
             msg="LATdx CLI pin ${pinned} is current (stable ${stable})."

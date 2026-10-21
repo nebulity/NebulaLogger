@@ -1,0 +1,47 @@
+name: 'Authorize Reserved Org'
+description: >-
+  Log in to the fork's long-lived reserved scratch org from its SFDX auth URL
+  and make it the default org. See FORK.md, Reserved org.
+
+inputs:
+  sfdx-auth-url:
+    description: 'SFDX auth URL of the reserved org (the TARGET_ORG_SFDX_AUTH_URL secret).'
+    required: true
+  alias:
+    description: 'Alias to give the org.'
+    required: false
+    default: 'target-org'
+  sf:
+    description: "Command that runs the Salesforce CLI, e.g. 'npx sf' (from node_modules) or 'sf' (global install)."
+    required: false
+    default: 'npx sf'
+
+runs:
+  using: composite
+  steps:
+    - name: 'Authorize reserved org'
+      shell: bash
+      env:
+        SFDX_AUTH_URL: ${{ inputs.sfdx-auth-url }}
+        ORG_ALIAS: ${{ inputs.alias }}
+        SF: ${{ inputs.sf }}
+      run: |
+        set -uo pipefail
+        read -r -a sf <<< "$SF"
+        "${sf[@]}" version
+        auth_file="$(mktemp)"
+        trap 'rm -f "$auth_file"' EXIT
+        printf '%s' "$SFDX_AUTH_URL" > "$auth_file"
+        # The org's OAuth token endpoint occasionally times out from a
+        # runner (transient RefreshTokenAuthError); retry before giving up.
+        # A persistent RefreshTokenAuthError means the org expired: rotate it
+        # per FORK.md.
+        for attempt in 1 2 3; do
+          if "${sf[@]}" org login sfdx-url --sfdx-url-file "$auth_file" --alias "$ORG_ALIAS" --set-default; then
+            break
+          fi
+          echo "Org auth attempt ${attempt} failed; retrying in 10s..."
+          sleep 10
+        done
+        # Fail loudly if every attempt failed rather than proceeding unauthed.
+        "${sf[@]}" org display --target-org "$ORG_ALIAS" > /dev/null

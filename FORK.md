@@ -44,13 +44,26 @@ All divergence lives in `.github/` plus this file:
   - `workflow_dispatch` trigger and a read-only default token
     (`permissions:` block) are added; `id-token: write` lets jobs mint the
     OIDC token used for the LATdx OSS license exchange.
-- `.github/actions/latdx-test/`: composite action that installs the LATdx
-  CLI (pinned to the current stable release, `cli-version` input), resolves
-  a license, and runs `latdx test run` against the job's default org (the
-  reserved org).
+- `.github/actions/latdx-setup/`: composite action that installs the LATdx
+  CLI (the fork's single version pin, `PINNED_CLI_VERSION`, the current
+  stable release) and resolves a license. Every workflow that runs LATdx
+  uses it.
+- `.github/actions/latdx-test/`: `latdx-setup`, then `latdx test run`
+  against the job's default org (the reserved org).
+- `.github/actions/reserved-org-auth/`: logs in to the reserved org from
+  `TARGET_ORG_SFDX_AUTH_URL`, with retries.
 - `.github/workflows/latdx-benchmark.yml` (dispatch only): four timed runs of
   the full suite on the reserved org (cold, cached, comment-only edit, one
   semantic edit) published as a cold-vs-cached table in the run summary.
+- `.github/workflows/latdx-value.yml` (dispatch only): measures whether
+  LATdx saves test and deploy time on real upstream changes (recent upstream
+  main commits and open upstream PRs, fetched directly; it does not need the
+  mirror). Per change it compares stock `sf apex run test` and `sf project
+deploy validate --test-level RunLocalTests` with LATdx cold, warm,
+  selection, and `RunSpecifiedTests` on the LATdx selection, and appends the
+  results to the `latdx-value-data` branch (`records.ndjson`,
+  `records.csv`, schema in its README). See [Measuring LATdx's
+  value](#measuring-latdxs-value).
 - `.github/workflows/fork-health.yml`: daily check that fails when the
   reserved org is within 7 days of its expiry (GitHub emails a failed
   scheduled run to whoever last changed the workflow's cron; the fork has
@@ -87,6 +100,11 @@ code is untrusted:
   `held-sensitive` label and are NOT auto-built; review the manifest diff,
   then dispatch Build on the branch manually. The blast radius is one
   disposable scratch org, not a Dev Hub.
+- `latdx-value.yml` checks out upstream code (including open PRs) but only
+  deploys it to the org and lets LATdx parse it: it installs `sf` globally
+  from the fork's own `package.json` pin and never runs `npm`/`npx` in the
+  measured checkout. Only its publish job can write, and it handles nothing
+  but the JSON records, pushing them to the `latdx-value-data` branch.
 - Revoke a leaked org by deleting it on the Dev Hub and rotating
   `TARGET_ORG_SFDX_AUTH_URL` to a fresh org (see
   [Rotate the reserved org](#rotate-the-reserved-org)).
@@ -131,9 +149,10 @@ upstream-pr-<n>`.
   per-cycle build cap defaults to 1; raise it for a manual run with
   `gh workflow run mirror-upstream-prs.yml -f max-builds=3` only when the
   group is idle.
-- Bump the LATdx CLI: change the `cli-version` default in
-  `.github/actions/latdx-test/action.yml` and `latdx-benchmark.yml` together,
-  then dispatch Build and LATdx Benchmark on main.
+- Bump the LATdx CLI: change `PINNED_CLI_VERSION` in
+  `.github/actions/latdx-setup/action.yml`, then dispatch Build and LATdx
+  Benchmark on main. Any LATdx workflow also takes a `cli-version` input to
+  try another release without changing the pin.
 
 ### Rotate the reserved org
 
@@ -168,6 +187,27 @@ from being disabled for inactivity), and dispatch both org workflows on main:
 `gh workflow run build.yml --ref main` and
 `gh workflow run latdx-benchmark.yml --ref main`. The first build on a fresh
 org assigns `LoggerAdmin`; later re-assigns fail harmlessly.
+
+## Measuring LATdx's value
+
+`gh workflow run latdx-value.yml --ref main -f upstream-commits=5 -f
+upstream-prs="1037 1030"` measures each change on the reserved org (about 20
+minutes per change; changes run one after another and queue behind any
+build). The run summary has one row per change; the `latdx-value-data`
+branch keeps every record. Points that keep the numbers honest:
+
+- Every arm runs on the same org and the same commit. The warm arm starts
+  from the cache `latdx test run` left on the change's base commit, with no
+  daemon running across the checkout, as on a fresh CI runner restoring its
+  cache.
+- Selection shares are weighted by each test's RunTime in the stock run, not
+  only counted, and a metadata risk flag from `latdx test impact` sets the
+  safe share to the full suite.
+- Summed RunTime is compute; Salesforce runs tests in parallel, so wall time
+  saved is smaller. Both are recorded.
+- `sf project deploy validate` arms run on the change's delta against the org
+  at the base commit, with the recipes' uncovered example trigger removed (as
+  in upstream's clean org) and restored afterwards.
 
 ## Known issues
 
