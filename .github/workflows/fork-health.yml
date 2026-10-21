@@ -1,0 +1,72 @@
+# Daily check of the two things in this fork that silently go stale:
+#
+#   1. The reserved scratch org behind TARGET_ORG_SFDX_AUTH_URL. Scratch orgs
+#      live at most 30 days; once it expires every Build and LATdx Benchmark
+#      run fails at org auth. FORK.md's "Reserved org" section holds its
+#      expiry date (the single source of truth, updated on every rotation).
+#      Within REMIND_DAYS of that date this run fails. GitHub emails a failed
+#      scheduled run to whoever last changed this workflow's cron, and the
+#      fork has Issues disabled, so the red run is the reminder.
+#   2. The LATdx CLI pinned in .github/actions/latdx-test/action.yml. When it
+#      falls behind the latest stable release this warns (the run stays green:
+#      an older pin still produces a valid signal).
+name: Fork Health
+
+on:
+  schedule:
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-health
+  cancel-in-progress: false
+
+env:
+  REMIND_DAYS: 7
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'Checkout source code'
+        uses: actions/checkout@v4
+
+      - name: 'Check LATdx CLI pin'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pinned="$(awk '/^  cli-version:/{f=1} f && /default:/{gsub(/[^0-9.]/,"",$2); print $2; exit}' .github/actions/latdx-test/action.yml)"
+          stable="$(gh release view -R nebulity/latdx-cli --json tagName --jq '.tagName | sub("^cli-v"; "")')"
+          newest="$(printf '%s\n%s\n' "$pinned" "$stable" | sort -V | tail -1)"
+          if [ "$pinned" != "$stable" ] && [ "$newest" = "$stable" ]; then
+            msg="LATdx CLI pin ${pinned} is behind stable ${stable}: bump cli-version in .github/actions/latdx-test/action.yml and latdx-benchmark.yml (FORK.md, Operations)."
+            echo "::warning title=LATdx CLI pin::${msg}"
+          else
+            msg="LATdx CLI pin ${pinned} is current (stable ${stable})."
+          fi
+          echo "$msg"
+          echo "- ${msg}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 'Check reserved org expiry'
+        run: |
+          set -euo pipefail
+          expires="$(grep -oE '^- \*\*Expires: [0-9]{4}-[0-9]{2}-[0-9]{2}' FORK.md | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || true)"
+          if [ -z "$expires" ]; then
+            echo "::error title=Reserved org::FORK.md has no '- **Expires: YYYY-MM-DD**' line in its Reserved org section."
+            exit 1
+          fi
+          days_left=$(( ( $(date -u -d "$expires" +%s) - $(date -u -d "$(date -u +%F)" +%s) ) / 86400 ))
+          if [ "$days_left" -gt "$REMIND_DAYS" ]; then
+            msg="Reserved org expires ${expires} (${days_left} days left)."
+            echo "$msg"
+            echo "- ${msg}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          msg="Reserved org expires ${expires} (${days_left} days left): rotate it per FORK.md (Operations, Rotate the reserved org), then commit the new expiry date to FORK.md."
+          echo "::error title=Reserved org::${msg}"
+          echo "- **${msg}**" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
