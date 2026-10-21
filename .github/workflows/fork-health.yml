@@ -1,0 +1,97 @@
+# Daily check of the two things in this fork that silently go stale:
+#
+#   1. The reserved scratch org behind TARGET_ORG_SFDX_AUTH_URL. Scratch orgs
+#      live at most 30 days; once it expires every Build and LATdx Benchmark
+#      run fails at org auth. FORK.md's "Reserved org" section holds its
+#      expiry date (the single source of truth, updated on every rotation).
+#      Within REMIND_DAYS of that date this opens a `fork-health` issue and
+#      fails the run, so the owner is notified twice.
+#   2. The LATdx CLI pinned in .github/actions/latdx-test/action.yml. When it
+#      falls behind the latest stable release, this opens an issue (the run
+#      stays green: an old pin still produces a valid signal).
+#
+# Issues close themselves once the condition clears (FORK.md carries a new
+# date, or the pin is bumped).
+name: Fork Health
+
+on:
+  schedule:
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: fork-health
+  cancel-in-progress: false
+
+env:
+  REMIND_DAYS: 7
+  ORG_ISSUE_PREFIX: 'Reserved org expires'
+  CLI_ISSUE_PREFIX: 'LATdx CLI pin is behind'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'Checkout source code'
+        uses: actions/checkout@v4
+
+      - name: 'Ensure the fork-health label exists'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh label create fork-health --color D93F0B --description 'Fork upkeep reminder' --force
+
+      - name: 'Check LATdx CLI pin'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          pinned="$(awk '/^  cli-version:/{f=1} f && /default:/{gsub(/[^0-9.]/,"",$2); print $2; exit}' .github/actions/latdx-test/action.yml)"
+          stable="$(gh release view -R nebulity/latdx-cli --json tagName --jq '.tagName | sub("^cli-v"; "")')"
+          echo "Pinned CLI: ${pinned:-?}; latest stable: ${stable:-?}"
+          existing="$(gh issue list --label fork-health --state open --search "\"${CLI_ISSUE_PREFIX}\" in:title" --json number --jq '.[0].number // empty')"
+          newest="$(printf '%s\n%s\n' "$pinned" "$stable" | sort -V | tail -1)"
+          if [ -n "$pinned" ] && [ -n "$stable" ] && [ "$pinned" != "$stable" ] && [ "$newest" = "$stable" ]; then
+            echo "::warning title=LATdx CLI pin::Pinned ${pinned} is behind stable ${stable}."
+            if [ -z "$existing" ]; then
+              gh issue create --label fork-health \
+                --title "${CLI_ISSUE_PREFIX} stable (${pinned} < ${stable})" \
+                --body "The LATdx CLI pinned in \`.github/actions/latdx-test/action.yml\` (\`${pinned}\`) is behind the latest stable release (\`${stable}\`), so this fork is not exercising the current release.
+
+          Bump the \`cli-version\` default in \`.github/actions/latdx-test/action.yml\` and in \`.github/workflows/latdx-benchmark.yml\`, then dispatch Build and LATdx Benchmark on main (see FORK.md, Operations). This issue closes itself once the pin is current."
+            fi
+          elif [ -n "$existing" ]; then
+            gh issue close "$existing" --comment "Pin \`${pinned}\` is current with stable \`${stable}\`."
+          fi
+
+      - name: 'Check reserved org expiry'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          expires="$(grep -oE '^- \*\*Expires: [0-9]{4}-[0-9]{2}-[0-9]{2}' FORK.md | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || true)"
+          if [ -z "$expires" ]; then
+            echo "::error title=Reserved org::FORK.md has no '- **Expires: YYYY-MM-DD**' line in its Reserved org section."
+            exit 1
+          fi
+          days_left=$(( ( $(date -u -d "$expires" +%s) - $(date -u -d "$(date -u +%F)" +%s) ) / 86400 ))
+          echo "Reserved org expires ${expires} (${days_left} days left)."
+          existing="$(gh issue list --label fork-health --state open --search "\"${ORG_ISSUE_PREFIX}\" in:title" --json number --jq '.[0].number // empty')"
+          if [ "$days_left" -gt "$REMIND_DAYS" ]; then
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --comment "FORK.md now records expiry ${expires} (${days_left} days left)."
+            fi
+            exit 0
+          fi
+          if [ -z "$existing" ]; then
+            gh issue create --label fork-health \
+              --title "${ORG_ISSUE_PREFIX} ${expires}: rotate it" \
+              --body "The reserved scratch org behind \`TARGET_ORG_SFDX_AUTH_URL\` expires on **${expires}** (${days_left} days left). After that every Build and LATdx Benchmark run fails at org auth with \`RefreshTokenAuthError\`.
+
+          Rotate it with the steps in FORK.md (Operations, \"Rotate the reserved org\"), then commit FORK.md with the new expiry date. This issue closes itself on the next daily run after that commit lands on main."
+          fi
+          echo "::error title=Reserved org::Reserved org expires ${expires} (${days_left} days left); rotate it per FORK.md."
+          exit 1

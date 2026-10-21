@@ -15,16 +15,16 @@ name: 'LATdx Benchmark'
 # one: if a comment-only edit reruns tests, the fingerprint is hashing file
 # bytes rather than the parsed token stream, and the summary will show it.
 #
-# The org is the same reserved pool org build.yml uses, so this measures the
-# real pipeline rather than a synthetic fixture.
+# The org is the same long-lived reserved org build.yml uses, so this measures
+# the real pipeline rather than a synthetic fixture.
 
 on:
   workflow_dispatch:
     inputs:
       cli-version:
-        description: "LATdx CLI version to install (semver like '0.46.0') or 'latest'."
+        description: "LATdx CLI version to install (semver like '0.52.3') or 'latest'."
         required: false
-        default: '0.46.0'
+        default: '0.52.3'
       touch-class:
         description: 'Core class to edit for the incremental run.'
         required: false
@@ -35,6 +35,12 @@ permissions:
   # Required for the OSS auto-license OIDC exchange on public repos. Without
   # it the run free-tier caps at 100 tests and the numbers are meaningless.
   id-token: write
+
+# Shares the reserved org with build.yml, so it queues on the same group
+# rather than deploying over a build in flight.
+concurrency:
+  group: nebula-fork-shared-org
+  cancel-in-progress: false
 
 jobs:
   benchmark:
@@ -58,7 +64,7 @@ jobs:
         if: steps.cache-npm.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: 'Authorize reserved pool org'
+      - name: 'Authorize reserved org'
         shell: bash
         env:
           TARGET_ORG_SFDX_AUTH_URL: ${{ secrets.TARGET_ORG_SFDX_AUTH_URL }}
@@ -78,8 +84,11 @@ jobs:
       - name: 'Deploy Nebula Logger'
         run: npx sf project deploy start --source-dir ./nebula-logger/ --ignore-conflicts
 
+      # Already assigned on the reused org after its first build; a
+      # re-assign exits non-zero.
       - name: 'Assign Logger Admin Permission Set'
         run: npm run permset:assign:admin
+        continue-on-error: true
 
       # LATdx's reach analysis runs an apex-ls bridge on the JVM; ubuntu-22.04's
       # default JDK is too old for the bridge jar. Mirrors .github/actions/latdx-test.

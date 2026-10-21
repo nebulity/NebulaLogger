@@ -7,14 +7,14 @@ description: >-
 
 inputs:
   cli-version:
-    # Must be >= 0.43.0: the OSS-license-uncaps-in-CI logic (#2190) landed
-    # 2026-06-10, one day after the last STABLE release (0.41.4), so 'latest'
-    # (= latest stable) still resolves to a binary that hard-blocks CI runs
-    # without a TEAM/CI token regardless of the OSS license. Pin a release
-    # that carries #2190 until a stable >= 0.43.0 ships; bump deliberately.
-    description: "LATdx CLI version to install (semver like '0.46.0') or 'latest'."
+    # Pinned to the current stable release so a build is reproducible and a
+    # CLI change shows up as a deliberate bump commit. Must stay >= 0.43.0
+    # (OSS license uncaps CI runs). The Fork Health workflow opens an issue
+    # when this pin falls behind the latest stable release; bump it here and
+    # in latdx-benchmark.yml together.
+    description: "LATdx CLI version to install (semver like '0.52.3') or 'latest'."
     required: false
-    default: '0.46.0'
+    default: '0.52.3'
   license:
     # Pass an optional TEAM/CI license here as an INPUT, not via an
     # `env: LATDX_LICENSE_KEY`. An unset secret passed as env sets an EMPTY

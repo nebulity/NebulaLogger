@@ -35,7 +35,7 @@ permissions:
   pull-requests: read
   id-token: write
 
-# The fork deploys every build to one shared reserved pool org, so all fork
+# The fork deploys every build to one shared reserved org, so all fork
 # builds must serialize (queue, never cancel). Upstream creates a fresh org
 # per run, so it keeps native cross-run parallelism via a per-run group.
 concurrency:
@@ -258,10 +258,10 @@ jobs:
         run: npm ci
 
       # Upstream creates a throwaway scratch org per run. The fork instead
-      # reuses one long-lived org reserved from the LATdx scratch pool
-      # (the pool Dev Hub blocks fresh creates), authorized from its SFDX
-      # auth URL. The org is redeployed every build, which is idempotent.
-      - name: 'Authorize reserved pool org'
+      # reuses one long-lived org, created from base-scratch-def.json and
+      # authorized from its SFDX auth URL (see FORK.md for its expiry and
+      # rotation). The org is redeployed every build, which is idempotent.
+      - name: 'Authorize reserved org'
         if: ${{ github.repository != 'jongpie/NebulaLogger' }}
         shell: bash
         run: |
@@ -362,7 +362,7 @@ jobs:
           flags: Apex
           token: ${{ secrets.CODECOV_TOKEN }}
 
-      # Only upstream's throwaway org is deleted; the fork's reserved pool
+      # Only upstream's throwaway org is deleted; the fork's reserved
       # org is long-lived and reused across builds.
       - name: 'Delete Scratch Org'
         run: npx sf org delete scratch --no-prompt
