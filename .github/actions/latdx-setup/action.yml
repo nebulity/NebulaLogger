@@ -36,11 +36,13 @@ runs:
     - name: 'Install LATdx CLI'
       shell: bash
       env:
-        # The fork's single LATdx CLI pin. Pinned to the current stable release
-        # so a build is reproducible and a CLI change shows up as a deliberate
-        # bump commit; must stay >= 0.43.0 (OSS license uncaps CI runs). The
-        # Fork Health workflow warns when it falls behind the latest stable.
-        PINNED_CLI_VERSION: '0.52.3'
+        # The fork's single LATdx CLI pin, so a build is reproducible and a CLI
+        # change shows up as a deliberate bump commit. Keep it at or above the
+        # latest stable release; a prerelease is fine when it carries a fix the
+        # fork needs (0.52.4: full-suite runs on a cold cache). Must stay
+        # >= 0.43.0 (OSS license uncaps CI runs). The Fork Health workflow
+        # warns when it falls behind the latest stable.
+        PINNED_CLI_VERSION: '0.52.4'
         CLI_VERSION: ${{ inputs.cli-version }}
       run: |
         set -euo pipefail

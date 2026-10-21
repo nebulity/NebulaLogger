@@ -45,8 +45,8 @@ All divergence lives in `.github/` plus this file:
     (`permissions:` block) are added; `id-token: write` lets jobs mint the
     OIDC token used for the LATdx OSS license exchange.
 - `.github/actions/latdx-setup/`: composite action that installs the LATdx
-  CLI (the fork's single version pin, `PINNED_CLI_VERSION`, the current
-  stable release) and resolves a license. Every workflow that runs LATdx
+  CLI (the fork's single version pin, `PINNED_CLI_VERSION`, at or above
+  the latest stable release) and resolves a license. Every workflow that runs LATdx
   uses it.
 - `.github/actions/latdx-test/`: `latdx-setup`, then `latdx test run`
   against the job's default org (the reserved org).
