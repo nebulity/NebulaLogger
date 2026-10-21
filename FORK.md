@@ -171,15 +171,19 @@ org assigns `LoggerAdmin`; later re-assigns fail harmlessly.
 
 ## Known issues
 
-- Full-suite run fails (`An unknown exception occurred`): once the OSS
-  auto-license uncaps the run, `latdx test run` over NebulaLogger's full
-  org suite (73 local Apex test classes) errors on every class, while stock
-  `sf apex run test --test-level RunLocalTests` passes all 1366 tests on the
-  same org. This is a LATdx bug in the uncapped full-suite submission path
-  (not an org, shape, or NebulaLogger problem), and it is the kind of
-  real-world signal this fork exists to surface. The base job stays red
-  until LATdx fixes it; the LATdx licensing, org provisioning, deploy, and
-  capped runs all work.
+- Full-suite run fails (`An unknown exception occurred`): `latdx test run`
+  over NebulaLogger's full org suite (73 local Apex test classes, ~1,354
+  methods) errors on every class, while stock
+  `sf apex run test --test-level RunLocalTests` passes on the same org.
+  Reproduced on LATdx 0.52.3 against the fresh reserved org (Build run
+  [39592387700](https://github.com/nebulity/NebulaLogger/actions/runs/39592387700):
+  auth, deploy and the OSS license all succeed, then
+  `Error running tests: An unknown exception occurred.`, 73 classes FAIL).
+  Cause, on the LATdx side: a cold-cache run submits every method as an
+  explicit `tests[]` array to Salesforce's `runTestsAsynchronous`, which
+  rejects arrays above roughly 550-600 methods with `UNKNOWN_EXCEPTION`
+  (diagnosed in nebulity/latdx#2263, closed unmerged). The base job stays
+  red until a LATdx release fixes it; the fork then bumps its CLI pin.
 
 ## Timing comparison caveats
 

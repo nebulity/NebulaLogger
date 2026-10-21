@@ -188,9 +188,9 @@ jobs:
           echo "Edit target: $CLASS_FILE"
           cp "$CLASS_FILE" /tmp/original.cls
 
-          # `latdx test run --json` emits the standard `sf apex test run --json`
-          # envelope. Per sf's JSONReporter the summary carries no `skipped`
-          # field, so cache hits are counted from tests[].Outcome == "Skip".
+          # `latdx test run --json` emits the `sf apex run test --json` envelope
+          # plus `result.cacheReport`. A replayed result renders as an ordinary
+          # `Pass` in tests[], so cache hits are counted from cacheReport.hits.
           # `testsRan` is the whole suite (cached + executed), which is what
           # makes "executed" the number that actually shrinks.
           run_suite() {
@@ -204,7 +204,7 @@ jobs:
             local total cached executed outcome
             total=$(jq -r '.result.summary.testsRan // empty' "/tmp/${label}.json" 2>/dev/null)
             outcome=$(jq -r '.result.summary.outcome // empty' "/tmp/${label}.json" 2>/dev/null)
-            cached=$(jq -r '[.result.tests[]? | select(.Outcome == "Skip")] | length' "/tmp/${label}.json" 2>/dev/null)
+            cached=$(jq -r 'if .result then (.result.cacheReport.hits // 0) else empty end' "/tmp/${label}.json" 2>/dev/null)
             if [ -n "${total:-}" ] && [ -n "${cached:-}" ]; then
               executed=$(( total - cached ))
             else
