@@ -8,6 +8,12 @@ the fork's main). Each run appends one record per measured upstream change.
   classes LATdx saw).
 - `records.csv`: the same records flattened, regenerated from
   `records.ndjson` on every run.
+- `selection-replay.ndjson` / `.csv`: one row per upstream commit replayed
+  through `latdx test impact` alone (no org): the share of the suite LATdx
+  would select for that commit, by count and by RunTime. Rows repeat across
+  runs; filter by `run_url` or `cli_version` to compare like with like.
+- `baseline-runtimes.json`: per-test RunTime (ms, keyed by lower-cased
+  `Class.method`) from the newest stock run, the weights the replay uses.
 
 ## What one record measures
 

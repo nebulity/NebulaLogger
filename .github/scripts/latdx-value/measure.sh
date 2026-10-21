@@ -176,6 +176,10 @@ run_arm baseline_tests sf apex run test --test-level RunLocalTests --target-org 
 clear_latdx_cache
 run_arm latdx_cold latdx test run --target-org "$ORG_ALIAS" --json
 
+# Per-test RunTime of the stock run, the weights replay-selection.sh uses.
+jq -c '[.result.tests[]? | {key: ((.ApexClass.Name + "." + .MethodName) | ascii_downcase), value: (.RunTime // 0)}] | from_entries' \
+  "$OUT_DIR/baseline_tests.json" > "$OUT_DIR/runtimes.json" 2> /dev/null || rm -f "$OUT_DIR/runtimes.json"
+
 # --- Record -----------------------------------------------------------------
 APEX_SUBJECTS="$(printf '%s\n' "${apex_subjects[@]}" | jq -R . | jq -sc 'map(select(length > 0))')" \
   DELTA_FILES="${#DELTA[@]}" DELETED_FILES="$deleted_count" \

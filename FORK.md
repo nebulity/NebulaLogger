@@ -202,7 +202,10 @@ branch keeps every record. Points that keep the numbers honest:
   cache.
 - Selection shares are weighted by each test's RunTime in the stock run, not
   only counted, and a metadata risk flag from `latdx test impact` sets the
-  safe share to the full suite.
+  safe share to the full suite. The `selection-replay` input (default 50)
+  also replays `latdx test impact` alone over that many upstream commits,
+  with no org, to show selection as a distribution rather than a few
+  samples.
 - Summed RunTime is compute; Salesforce runs tests in parallel, so wall time
   saved is smaller. Both are recorded.
 - `sf project deploy validate` arms run on the change's delta against the org

@@ -11,9 +11,12 @@
 #            RunSpecifiedTests with that selection (does the coverage gate
 #            still pass?), and latdx validate
 #
-# Results land in the run summary and, as one JSON record per target plus a
-# regenerated CSV, on the `latdx-value-data` branch so they outlive the run's
-# artifacts. Upstream code is only deployed to the org and parsed by LATdx:
+# A second, org-free job replays `latdx test impact` over many more upstream
+# commits to show the selection share as a distribution, weighted by the
+# per-test RunTime of the latest stock run.
+#
+# Results land in the run summary and, as JSON lines plus regenerated CSVs, on
+# the `latdx-value-data` branch so they outlive the run's artifacts. Upstream code is only deployed to the org and parsed by LATdx:
 # the runner never installs or runs anything from the target's package.json.
 name: 'LATdx Value'
 
@@ -28,6 +31,10 @@ on:
         description: 'Space-separated upstream PR numbers to measure, e.g. "1037 1030".'
         required: false
         default: ''
+      selection-replay:
+        description: 'How many of the latest upstream main commits that touch nebula-logger/ to replay through latdx test impact only (no org; 0 for none).'
+        required: false
+        default: '50'
       cli-version:
         description: "LATdx CLI version (semver or 'latest'). Empty installs the version pinned in the latdx-setup action."
         required: false
@@ -57,10 +64,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMITS: ${{ inputs.upstream-commits }}
           PRS: ${{ inputs.upstream-prs }}
+          REPLAY: ${{ inputs.selection-replay }}
         run: |
           set -euo pipefail
-          if [[ ! "$COMMITS" =~ ^[0-9]+$ ]]; then
-            echo "::error::upstream-commits must be a non-negative number."
+          if [[ ! "$COMMITS" =~ ^[0-9]+$ ]] || [[ ! "$REPLAY" =~ ^[0-9]+$ ]]; then
+            echo "::error::upstream-commits and selection-replay must be non-negative numbers."
             exit 1
           fi
           targets='[]'
@@ -170,10 +178,71 @@ jobs:
           path: ${{ runner.temp }}/out/${{ matrix.target.id }}
           if-no-files-found: warn
 
+  replay:
+    name: 'Replay selection'
+    needs: [plan, measure]
+    if: ${{ !cancelled() && inputs.selection-replay != '0' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: 'Checkout fork'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Only `latdx test impact` runs here, which needs no org and no license.
+      - name: 'Set up LATdx'
+        uses: ./.github/actions/latdx-setup
+        with:
+          cli-version: ${{ inputs.cli-version }}
+
+      - name: "Download this run's measurements"
+        uses: actions/download-artifact@v4
+        with:
+          pattern: latdx-value-commit-*
+          path: ${{ runner.temp }}/outputs
+
+      # Weights come from this run's newest stock run if it measured a commit,
+      # else from the copy the last publish left on the dataset branch.
+      - name: 'Pick RunTime weights'
+        id: weights
+        run: |
+          set -euo pipefail
+          weights="${RUNNER_TEMP}/runtimes.json"
+          newest="$(./.github/scripts/latdx-value/newest-runtimes.sh "${RUNNER_TEMP}/outputs")"
+          if [ -n "$newest" ]; then
+            cp "$newest" "$weights"
+          elif git fetch -q origin latdx-value-data && git show FETCH_HEAD:baseline-runtimes.json > "$weights" 2> /dev/null; then
+            echo "Using baseline-runtimes.json from the latdx-value-data branch."
+          else
+            echo "::error::No per-test RunTimes available: measure at least one commit (upstream-commits >= 1) first."
+            exit 1
+          fi
+          echo "Weights cover $(jq 'length' "$weights") test methods."
+          echo "weights=${weights}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Replay latdx test impact'
+        env:
+          COUNT: ${{ inputs.selection-replay }}
+          WEIGHTS: ${{ steps.weights.outputs.weights }}
+        run: |
+          set -euo pipefail
+          ws="${RUNNER_TEMP}/ws"
+          git clone -q --filter=blob:none "https://github.com/${UPSTREAM_REPO}.git" "$ws"
+          mkdir -p "${RUNNER_TEMP}/replay"
+          ./.github/scripts/latdx-value/replay-selection.sh "$ws" "$COUNT" "$WEIGHTS" > "${RUNNER_TEMP}/replay/replay.ndjson"
+          ./.github/scripts/latdx-value/report.sh replay-md < "${RUNNER_TEMP}/replay/replay.ndjson"
+
+      - name: 'Upload replay rows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: latdx-value-replay
+          path: ${{ runner.temp }}/replay
+
   publish:
     name: 'Publish results'
-    needs: [plan, measure]
-    if: ${{ !cancelled() && needs.plan.outputs.targets != '[]' }}
+    needs: [plan, measure, replay]
+    if: ${{ !cancelled() && (needs.plan.outputs.targets != '[]' || inputs.selection-replay != '0') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -198,16 +267,36 @@ jobs:
           for f in "${RUNNER_TEMP}"/outputs/latdx-value-*/record.json; do
             [ -f "$f" ] && jq -c . "$f" >> "$records"
           done
-          echo "Collected $(wc -l < "$records") record(s)."
-          echo "records=${records}" >> "$GITHUB_OUTPUT"
+          # Replay rows get the run's CLI version and URL, which the rows
+          # themselves do not carry.
+          replay="${RUNNER_TEMP}/replay.ndjson"
+          : > "$replay"
+          rows="${RUNNER_TEMP}/outputs/latdx-value-replay/replay.ndjson"
+          if [ -s "$rows" ]; then
+            cli="$(jq -r '.cli_version' "$records" | head -n 1)"
+            jq -c --arg cli "${cli:-}" --arg run_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+              --arg at "$(date -u +%FT%TZ)" '. + {cli_version: $cli, run_url: $run_url, measured_at: $at}' "$rows" > "$replay"
+          fi
+          newest_weights="$(./.github/scripts/latdx-value/newest-runtimes.sh "${RUNNER_TEMP}/outputs")"
+          echo "Collected $(wc -l < "$records") record(s) and $(wc -l < "$replay") replay row(s)."
+          {
+            echo "records=${records}"
+            echo "replay=${replay}"
+            echo "weights=${newest_weights}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: 'Write run summary'
         env:
           RECORDS: ${{ steps.collect.outputs.records }}
+          REPLAY: ${{ steps.collect.outputs.replay }}
         run: |
           {
             echo "## LATdx value on Nebula Logger"
             echo
+            if [ -s "$REPLAY" ]; then
+              ./.github/scripts/latdx-value/report.sh replay-md < "$REPLAY"
+              echo
+            fi
             echo "Each row is one upstream change, measured on the reserved org (\`latdx --version\`: $(jq -r '.cli_version' "$RECORDS" | sort -u | paste -sd, -))."
             echo
             ./.github/scripts/latdx-value/report.sh md < "$RECORDS"
@@ -223,9 +312,14 @@ jobs:
       - name: 'Append to the dataset branch'
         env:
           RECORDS: ${{ steps.collect.outputs.records }}
+          REPLAY: ${{ steps.collect.outputs.replay }}
+          WEIGHTS: ${{ steps.collect.outputs.weights }}
         run: |
           set -euo pipefail
-          [ -s "$RECORDS" ] || { echo "No records to publish."; exit 0; }
+          if [ ! -s "$RECORDS" ] && [ ! -s "$REPLAY" ]; then
+            echo "Nothing to publish."
+            exit 0
+          fi
           data="${RUNNER_TEMP}/data"
           git config --global user.name 'latdx-value-bot'
           git config --global user.email 'ci@latdx.com'
@@ -237,7 +331,10 @@ jobs:
           fi
           cat "$RECORDS" >> "$data/records.ndjson"
           ./.github/scripts/latdx-value/report.sh csv < "$data/records.ndjson" > "$data/records.csv"
+          cat "$REPLAY" >> "$data/selection-replay.ndjson"
+          ./.github/scripts/latdx-value/report.sh replay-csv < "$data/selection-replay.ndjson" > "$data/selection-replay.csv"
+          if [ -n "$WEIGHTS" ]; then cp "$WEIGHTS" "$data/baseline-runtimes.json"; fi
           cp ./.github/scripts/latdx-value/DATASET.md "$data/README.md"
-          git -C "$data" add records.ndjson records.csv README.md
+          git -C "$data" add -A .
           git -C "$data" commit -q -m "data: LATdx value run ${GITHUB_RUN_ID}"
           git -C "$data" push -q origin latdx-value-data
