@@ -22,9 +22,9 @@ on:
   workflow_dispatch:
     inputs:
       cli-version:
-        description: "LATdx CLI version to install (semver like '0.52.3') or 'latest'."
+        description: "LATdx CLI version (semver or 'latest'). Empty installs the version pinned in the latdx-setup action."
         required: false
-        default: '0.52.3'
+        default: ''
       touch-class:
         description: 'Core class to edit for the incremental run.'
         required: false
@@ -65,21 +65,9 @@ jobs:
         run: npm ci
 
       - name: 'Authorize reserved org'
-        shell: bash
-        env:
-          TARGET_ORG_SFDX_AUTH_URL: ${{ secrets.TARGET_ORG_SFDX_AUTH_URL }}
-        run: |
-          npx sf version
-          echo "${TARGET_ORG_SFDX_AUTH_URL}" > ./target-auth-url.txt
-          for attempt in 1 2 3; do
-            if npx sf org login sfdx-url --sfdx-url-file ./target-auth-url.txt --alias target-org --set-default; then
-              break
-            fi
-            echo "Org auth attempt ${attempt} failed; retrying in 10s..."
-            sleep 10
-          done
-          rm -f ./target-auth-url.txt
-          npx sf org display --target-org target-org >/dev/null
+        uses: ./.github/actions/reserved-org-auth
+        with:
+          sfdx-auth-url: ${{ secrets.TARGET_ORG_SFDX_AUTH_URL }}
 
       - name: 'Deploy Nebula Logger'
         run: npx sf project deploy start --source-dir ./nebula-logger/ --ignore-conflicts
@@ -90,87 +78,11 @@ jobs:
         run: npm run permset:assign:admin
         continue-on-error: true
 
-      # LATdx's reach analysis runs an apex-ls bridge on the JVM; ubuntu-22.04's
-      # default JDK is too old for the bridge jar. Mirrors .github/actions/latdx-test.
-      - name: 'Set up Java for LATdx apex-ls'
-        uses: actions/setup-java@v4
+      - name: 'Set up LATdx'
+        uses: ./.github/actions/latdx-setup
         with:
-          distribution: temurin
-          java-version: '17'
-
-      # Install + license mirror .github/actions/latdx-test/action.yml, which
-      # stays the canonical copy. They are inlined here rather than reused
-      # because that action also runs the suite, and this job needs to time
-      # four separate runs itself.
-      - name: 'Install LATdx CLI'
-        shell: bash
-        env:
-          CLI_VERSION: ${{ inputs.cli-version }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$CLI_VERSION" =~ ^(latest|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            echo "::error::Invalid 'cli-version' input. Must be 'latest' or a semver."
-            exit 1
-          fi
-          script=""
-          for url in "https://latdx.com/install.sh" "https://raw.githubusercontent.com/nebulity/latdx-cli/main/install.sh"; do
-            if script="$(curl -fsSL "$url")"; then break; fi
-            script=""
-          done
-          if [ -z "$script" ]; then
-            echo "::error::Could not download the LATdx install script from any source."
-            exit 1
-          fi
-          if [ "$CLI_VERSION" = "latest" ]; then
-            printf '%s' "$script" | bash
-          else
-            printf '%s' "$script" | bash -s -- "$CLI_VERSION"
-          fi
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: 'Verify LATdx CLI'
-        shell: bash
-        run: latdx --version
-
-      - name: 'Resolve LATdx OSS license'
-        shell: bash
-        env:
-          INPUT_LICENSE: ${{ secrets.LATDX_CI_LICENSE_KEY }}
-        run: |
-          set +e +o pipefail
-          if [ -n "${INPUT_LICENSE:-}" ]; then
-            echo "::add-mask::$INPUT_LICENSE"
-            echo "LATDX_LICENSE_KEY=$INPUT_LICENSE" >> "$GITHUB_ENV"
-            echo "LATDX_LICENSE_BASE_URL=https://latdx-site.asolokh.workers.dev" >> "$GITHUB_ENV"
-            echo "Using provided LATdx CI license."
-            exit 0
-          fi
-          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-            echo "::warning::OIDC unavailable; run will free-tier cap and the numbers will not be full-suite."
-            exit 0
-          fi
-          OIDC_TOKEN="$(curl -sS -f -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Flatdx.com" 2>/dev/null | jq -r '.value // empty')"
-          if [ -z "$OIDC_TOKEN" ]; then
-            echo "::warning::OIDC mint failed; run will free-tier cap."
-            exit 0
-          fi
-          BODY="$(mktemp)"
-          for OSS_URL in "https://latdx.com/api/oss/license" "https://latdx-site.asolokh.workers.dev/api/oss/license"; do
-            CODE="$(curl -sS -o "$BODY" -w "%{http_code}" -X POST "$OSS_URL" \
-              -H "Authorization: Bearer $OIDC_TOKEN" -H "Content-Type: application/json" --max-time 15)"
-            echo "OSS license exchange via ${OSS_URL} -> HTTP ${CODE}"
-            if [ "$CODE" = "200" ]; then
-              JWT="$(jq -r '.license // empty' < "$BODY")"
-              if [ -n "$JWT" ]; then
-                echo "::add-mask::$JWT"
-                echo "LATDX_LICENSE_KEY=$JWT" >> "$GITHUB_ENV"
-                echo "LATDX_LICENSE_BASE_URL=${OSS_URL%/api/oss/license}" >> "$GITHUB_ENV"
-                echo "OSS auto-license active; full suite enabled."
-                break
-              fi
-            fi
-          done
+          cli-version: ${{ inputs.cli-version }}
+          license: ${{ secrets.LATDX_CI_LICENSE_KEY }}
 
       - name: 'Run benchmark'
         id: bench

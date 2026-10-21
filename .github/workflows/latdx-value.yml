@@ -1,0 +1,243 @@
+# Measures, per real upstream change, whether LATdx saves test and deploy
+# time on Nebula Logger compared with what upstream CI pays today. For each
+# target (a recent upstream main commit, or an open upstream PR) it runs
+# .github/scripts/latdx-value/measure.sh against the reserved org:
+#
+#   stock    sf apex run test RunLocalTests, and
+#            sf project deploy validate <delta> RunLocalTests
+#   LATdx    latdx test run cold (empty cache) and warm (cache from the base
+#            commit's run), latdx test impact selection (share of tests and of
+#            summed RunTime), sf project deploy validate <delta>
+#            RunSpecifiedTests with that selection (does the coverage gate
+#            still pass?), and latdx validate
+#
+# Results land in the run summary and, as one JSON record per target plus a
+# regenerated CSV, on the `latdx-value-data` branch so they outlive the run's
+# artifacts. Upstream code is only deployed to the org and parsed by LATdx:
+# the runner never installs or runs anything from the target's package.json.
+name: 'LATdx Value'
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream-commits:
+        description: 'How many of the latest upstream main commits that touch nebula-logger/ to replay (0 for none).'
+        required: false
+        default: '3'
+      upstream-prs:
+        description: 'Space-separated upstream PR numbers to measure, e.g. "1037 1030".'
+        required: false
+        default: ''
+      cli-version:
+        description: "LATdx CLI version (semver or 'latest'). Empty installs the version pinned in the latdx-setup action."
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# Shares the reserved org with build.yml and latdx-benchmark.yml.
+concurrency:
+  group: nebula-fork-shared-org
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: jongpie/NebulaLogger
+
+jobs:
+  plan:
+    name: 'Plan targets'
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - name: 'List targets'
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMITS: ${{ inputs.upstream-commits }}
+          PRS: ${{ inputs.upstream-prs }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$COMMITS" =~ ^[0-9]+$ ]]; then
+            echo "::error::upstream-commits must be a non-negative number."
+            exit 1
+          fi
+          targets='[]'
+          if [ "$COMMITS" -gt 0 ]; then
+            git init -q upstream
+            git -C upstream fetch -q --filter=blob:none --depth=500 "https://github.com/${UPSTREAM_REPO}.git" main
+            while IFS=$'\t' read -r sha subject; do
+              targets="$(jq -c --arg sha "$sha" --arg title "$subject" \
+                '. + [{id: ("commit-" + $sha[0:8]), kind: "commit", ref: $sha, title: $title}]' <<< "$targets")"
+            done < <(git -C upstream log --format='%H%x09%s' -n "$COMMITS" FETCH_HEAD -- nebula-logger)
+          fi
+          for pr in $PRS; do
+            if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
+              echo "::error::upstream-prs must be space-separated PR numbers (got '${pr}')."
+              exit 1
+            fi
+            title="$(gh api "repos/${UPSTREAM_REPO}/pulls/${pr}" --jq '.title')"
+            targets="$(jq -c --arg pr "$pr" --arg title "$title" \
+              '. + [{id: ("pr-" + $pr), kind: "pr", ref: ("pull/" + $pr + "/head"), title: $title}]' <<< "$targets")"
+          done
+          jq . <<< "$targets"
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
+
+  measure:
+    name: 'Measure ${{ matrix.target.id }}'
+    needs: plan
+    if: ${{ needs.plan.outputs.targets != '[]' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      # OSS auto-license exchange (see the latdx-setup action).
+      id-token: write
+    strategy:
+      fail-fast: false
+      # One org: targets measure one after another.
+      max-parallel: 1
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
+    steps:
+      - name: 'Checkout fork'
+        uses: actions/checkout@v4
+
+      - name: 'Set up Node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Installed globally from the fork's own pin rather than from the target's
+      # package.json, so nothing from the measured change executes on the runner.
+      - name: 'Install Salesforce CLI'
+        run: npm install --global "@salesforce/cli@$(jq -r '.devDependencies["@salesforce/cli"]' package.json)"
+
+      - name: 'Authorize reserved org'
+        uses: ./.github/actions/reserved-org-auth
+        with:
+          sfdx-auth-url: ${{ secrets.TARGET_ORG_SFDX_AUTH_URL }}
+          sf: sf
+
+      - name: 'Set up LATdx'
+        uses: ./.github/actions/latdx-setup
+        with:
+          cli-version: ${{ inputs.cli-version }}
+          license: ${{ secrets.LATDX_CI_LICENSE_KEY }}
+
+      - name: 'Fetch the target change'
+        id: target
+        env:
+          KIND: ${{ matrix.target.kind }}
+          REF: ${{ matrix.target.ref }}
+        run: |
+          set -euo pipefail
+          ws="${RUNNER_TEMP}/ws"
+          git clone -q --filter=blob:none "https://github.com/${UPSTREAM_REPO}.git" "$ws"
+          if [ "$KIND" = "pr" ]; then
+            git -C "$ws" fetch -q origin "$REF"
+            head="$(git -C "$ws" rev-parse FETCH_HEAD)"
+            base="$(git -C "$ws" merge-base origin/main "$head")"
+          else
+            head="$(git -C "$ws" rev-parse "${REF}^{commit}")"
+            base="$(git -C "$ws" rev-parse "${head}^")"
+          fi
+          echo "Measuring ${base:0:8}..${head:0:8}"
+          {
+            echo "ws=${ws}"
+            echo "head=${head}"
+            echo "base=${base}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 'Measure'
+        env:
+          WS: ${{ steps.target.outputs.ws }}
+          BASE_SHA: ${{ steps.target.outputs.base }}
+          HEAD_SHA: ${{ steps.target.outputs.head }}
+          TARGET_ID: ${{ matrix.target.id }}
+          TARGET_KIND: ${{ matrix.target.kind }}
+          TARGET_TITLE: ${{ matrix.target.title }}
+          OUT_DIR: ${{ runner.temp }}/out/${{ matrix.target.id }}
+          ORG_ALIAS: target-org
+        run: ./.github/scripts/latdx-value/measure.sh
+
+      - name: 'Upload raw outputs'
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: latdx-value-${{ matrix.target.id }}
+          path: ${{ runner.temp }}/out/${{ matrix.target.id }}
+          if-no-files-found: warn
+
+  publish:
+    name: 'Publish results'
+    needs: [plan, measure]
+    if: ${{ !cancelled() && needs.plan.outputs.targets != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 'Checkout fork'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 'Download raw outputs'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: latdx-value-*
+          path: ${{ runner.temp }}/outputs
+
+      - name: 'Collect records'
+        id: collect
+        run: |
+          set -euo pipefail
+          records="${RUNNER_TEMP}/records.ndjson"
+          : > "$records"
+          for f in "${RUNNER_TEMP}"/outputs/latdx-value-*/record.json; do
+            [ -f "$f" ] && jq -c . "$f" >> "$records"
+          done
+          echo "Collected $(wc -l < "$records") record(s)."
+          echo "records=${records}" >> "$GITHUB_OUTPUT"
+
+      - name: 'Write run summary'
+        env:
+          RECORDS: ${{ steps.collect.outputs.records }}
+        run: |
+          {
+            echo "## LATdx value on Nebula Logger"
+            echo
+            echo "Each row is one upstream change, measured on the reserved org (\`latdx --version\`: $(jq -r '.cli_version' "$RECORDS" | sort -u | paste -sd, -))."
+            echo
+            ./.github/scripts/latdx-value/report.sh md < "$RECORDS"
+            echo
+            echo "- **stock tests**: \`sf apex run test --test-level RunLocalTests\` at the change; summed RunTime is compute, wall is what CI waits."
+            echo "- **LATdx warm** uses the cache left by \`latdx test run\` on the base commit, like a CI cache restored from the previous build; executed = tests sent to the org."
+            echo "- **LATdx selection** is \`latdx test impact\`; time share weights each test by its RunTime in the stock run. Metadata risk flags mean a safe pipeline should run the full suite."
+            echo "- **deploy validate** runs on the delta against the org at the base commit. RunSpecifiedTests must reach 75% coverage on every Apex class and trigger in the delta."
+            echo
+            echo "Raw outputs: run artifacts. Dataset: [\`latdx-value-data\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/latdx-value-data) branch."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 'Append to the dataset branch'
+        env:
+          RECORDS: ${{ steps.collect.outputs.records }}
+        run: |
+          set -euo pipefail
+          [ -s "$RECORDS" ] || { echo "No records to publish."; exit 0; }
+          data="${RUNNER_TEMP}/data"
+          git config --global user.name 'latdx-value-bot'
+          git config --global user.email 'ci@latdx.com'
+          if git fetch -q origin latdx-value-data; then
+            git worktree add -q "$data" FETCH_HEAD
+            git -C "$data" checkout -q -B latdx-value-data
+          else
+            git worktree add -q --orphan -b latdx-value-data "$data"
+          fi
+          cat "$RECORDS" >> "$data/records.ndjson"
+          ./.github/scripts/latdx-value/report.sh csv < "$data/records.ndjson" > "$data/records.csv"
+          cp ./.github/scripts/latdx-value/DATASET.md "$data/README.md"
+          git -C "$data" add records.ndjson records.csv README.md
+          git -C "$data" commit -q -m "data: LATdx value run ${GITHUB_RUN_ID}"
+          git -C "$data" push -q origin latdx-value-data
