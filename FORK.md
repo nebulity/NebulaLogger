@@ -51,9 +51,10 @@ All divergence lives in `.github/` plus this file:
 - `.github/workflows/latdx-benchmark.yml` (dispatch only): four timed runs of
   the full suite on the reserved org (cold, cached, comment-only edit, one
   semantic edit) published as a cold-vs-cached table in the run summary.
-- `.github/workflows/fork-health.yml`: daily check that opens a
-  `fork-health` issue (and fails) when the reserved org is within 7 days of
-  its expiry, and opens an issue when the pinned CLI falls behind the latest
+- `.github/workflows/fork-health.yml`: daily check that fails when the
+  reserved org is within 7 days of its expiry (GitHub emails a failed
+  scheduled run to whoever last changed the workflow's cron; the fork has
+  Issues disabled), and warns when the pinned CLI falls behind the latest
   stable release.
 - `.github/workflows/mirror-upstream-prs.yml`: every 30 minutes, mirrors open
   upstream PRs into `upstream-pr-<n>` branches, opens fork PRs labeled
@@ -101,7 +102,7 @@ code is untrusted:
 
 The org behind `TARGET_ORG_SFDX_AUTH_URL`. Scratch orgs live at most 30
 days, so it is rotated monthly; `fork-health.yml` reads the expiry line
-below and opens a reminder issue 7 days ahead.
+below and starts failing 7 days ahead.
 
 - Username: `test-m0xaqbghbkg7@example.com` (alias `nebula-fork-shaped`
   locally)
@@ -136,8 +137,8 @@ upstream-pr-<n>`.
 
 ### Rotate the reserved org
 
-Do this when the `fork-health` issue opens (7 days before expiry), or any
-time Build fails at "Authorize reserved org" with `RefreshTokenAuthError`.
+Do this when Fork Health starts failing (7 days before expiry), or any time
+Build fails at "Authorize reserved org" with `RefreshTokenAuthError`.
 From a checkout of this repo, with `latdx-dh` authorized locally:
 
 ```bash
