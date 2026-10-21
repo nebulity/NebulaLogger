@@ -47,7 +47,7 @@ case "$mode" in
         elif $a.skipped then "skipped"
         elif ($a.rc // 0) != 0 then "\(s($a.wall_ms)) rc=\($a.rc)\(if $a.error then ": " + ($a.error | .[0:60]) else "" end)"
         else s($a.wall_ms) end;
-      def executed($a): if ($a.tests_ran // null) == null then "" else " (\(($a.tests_ran) - ($a.hits // 0)) of \($a.tests_ran))" end;
+      def executed($a): if ($a.tests_ran // null) == null or ($a.rc // 0) == 1 then "" else " (\(($a.tests_ran) - ($a.hits // 0)) of \($a.tests_ran))" end;
       def gate($a): if $a == null then "-" elif $a.skipped then "skipped: \($a.skipped)"
         else "\(s($a.wall_ms)), \($a.gate // "?")\(if $a.tests_completed then ", \($a.tests_completed) tests" else "" end)" end;
       .arms as $arms

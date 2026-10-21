@@ -23,7 +23,10 @@ deploy_metrics() {
 
 latdx_run_metrics() {
   local f="$OUT_DIR/$1.json" err out
-  err="$(sed 's/\x1b\[[0-9;]*m//g' "$OUT_DIR/$1.err" 2> /dev/null | grep -m1 -iE 'error|halt|license' | cut -c1-300)"
+  # stderr mixes plain lines with the daemon's NDJSON log records.
+  err="$(sed 's/\x1b\[[0-9;]*m//g' "$OUT_DIR/$1.err" 2> /dev/null \
+    | jq -Rr '(fromjson? | select(type == "object" and .lvl == "ERROR") | .msg) // (select(test("error|halt|license"; "i")))' 2> /dev/null \
+    | head -n 1 | cut -c1-300)"
   out="$(jq -c --arg err "$err" '{
       tests_ran: .result.summary.testsRan, passing: .result.summary.passing,
       failing: .result.summary.failing, outcome: .result.summary.outcome,
