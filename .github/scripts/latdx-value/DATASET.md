@@ -38,7 +38,11 @@ in the org it validates on, is removed first and restored afterwards.
 
 ## Columns that need care
 
-- `*_wall_ms` is what CI waits for, measured around the command.
+- `*_wall_ms` is what CI waits for, measured around the command. Each arm
+  starts only once the org's Apex test queue is idle; `queue_wait_ms` (in
+  `records.ndjson`) is how long that took, about a second for the check
+  itself. A long wait after a LATdx arm means the org was still finishing
+  that arm's tests after the command returned.
   `validate_*_server_ms` is Salesforce's own start-to-finish time for the
   deploy request.
 - `baseline_sum_runtime_ms` sums every test's RunTime: compute, not wall

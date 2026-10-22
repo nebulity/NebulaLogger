@@ -50,22 +50,41 @@ STATE_DIR="$HOME/.latdx/workspaces/$LATDX_WORKSPACE_ID"
 
 now_ms() { perl -MTime::HiRes=time -e 'printf("%d\n", time() * 1000)'; }
 
+# Waits (up to 15 minutes) until the org has no Apex test queue items left
+# from the previous arm, so no arm starts while the org is still running or
+# closing out earlier tests. Prints the milliseconds waited, which includes
+# one tooling query (about a second) even when the queue is already idle.
+wait_for_idle_tests() {
+  local start busy
+  start=$(now_ms)
+  for _ in $(seq 1 90); do
+    busy="$(sf data query --target-org "$ORG_ALIAS" --json \
+      --query "SELECT COUNT() FROM ApexTestQueueItem WHERE Status IN ('Holding', 'Queued', 'Preparing', 'Processing')" 2> /dev/null \
+      | jq -r '.result.totalSize // 0')"
+    [ "${busy:-0}" -eq 0 ] && break
+    sleep 10
+  done
+  echo $(($(now_ms) - start))
+}
+
 # run_arm <name> <command...>: stdout -> <name>.json, stderr -> <name>.err,
-# appends {arm, wall_ms, rc} to arms.ndjson. Never fails the script.
+# appends {arm, wall_ms, rc, queue_wait_ms} to arms.ndjson. Never fails the
+# script.
 run_arm() {
   local name="$1"
   shift
-  local start end rc
+  local start end rc waited
   echo "::group::${TARGET_ID} - ${name}"
+  waited="$(wait_for_idle_tests)"
   start=$(now_ms)
   (cd "$WS" && "$@") > "$OUT_DIR/${name}.json" 2> "$OUT_DIR/${name}.err"
   rc=$?
   end=$(now_ms)
   tail -n 20 "$OUT_DIR/${name}.err" || true
-  echo "${name}: rc=${rc} wall=$((end - start))ms"
+  echo "${name}: rc=${rc} wall=$((end - start))ms (waited ${waited}ms for an idle test queue)"
   echo "::endgroup::"
-  jq -cn --arg arm "$name" --argjson wall "$((end - start))" --argjson rc "$rc" \
-    '{arm: $arm, wall_ms: $wall, rc: $rc}' >> "$ARMS"
+  jq -cn --arg arm "$name" --argjson wall "$((end - start))" --argjson rc "$rc" --argjson waited "${waited:-0}" \
+    '{arm: $arm, wall_ms: $wall, rc: $rc, queue_wait_ms: $waited}' >> "$ARMS"
 }
 
 latdx_ws() { (cd "$WS" && latdx "$@"); }
