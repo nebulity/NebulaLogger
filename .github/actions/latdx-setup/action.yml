@@ -39,10 +39,10 @@ runs:
         # The fork's single LATdx CLI pin, so a build is reproducible and a CLI
         # change shows up as a deliberate bump commit. Keep it at or above the
         # latest stable release; a prerelease is fine when it carries a fix the
-        # fork needs (0.52.4: full-suite runs on a cold cache). Must stay
-        # >= 0.43.0 (OSS license uncaps CI runs). The Fork Health workflow
-        # warns when it falls behind the latest stable.
-        PINNED_CLI_VERSION: '0.52.4'
+        # fork needs (0.52.5: a cold full suite runs class-level in one job).
+        # Must stay >= 0.43.0 (OSS license uncaps CI runs). The Fork Health
+        # workflow warns when it falls behind the latest stable.
+        PINNED_CLI_VERSION: '0.52.5'
         CLI_VERSION: ${{ inputs.cli-version }}
       run: |
         set -euo pipefail
