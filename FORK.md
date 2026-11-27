@@ -122,11 +122,11 @@ The org behind `TARGET_ORG_SFDX_AUTH_URL`. Scratch orgs live at most 30
 days, so it is rotated monthly; `fork-health.yml` reads the expiry line
 below and starts failing 7 days ahead.
 
-- Username: `test-m0xaqbghbkg7@example.com` (alias `nebula-fork-shaped`
+- Username: `test-cd2gddygbw74@example.com` (alias `nebula-fork-shaped`
   locally)
-- Org ID: `00DAq00000I4vYv`, Dev Hub `latdx-dh`
-- Created: 2026-10-21, 30-day duration (the scratch-org maximum)
-- **Expires: 2026-11-20**
+- Org ID: `00DAq00000I55G1`, Dev Hub `latdx-dh`
+- Created: 2026-11-27, 30-day duration (the scratch-org maximum)
+- **Expires: 2026-12-27**
 
 ## Operations
 
